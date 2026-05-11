@@ -1,0 +1,32 @@
+services:
+  api:
+    build: ./api
+    environment:
+      LOKI_WATCHER_DB: /data/watcher.db
+      LOKI_WATCHER_DASHBOARD_TOKEN: ${LOKI_WATCHER_DASHBOARD_TOKEN:-}
+      LOKI_WATCHER_LOG_RETENTION_DAYS: ${LOKI_WATCHER_LOG_RETENTION_DAYS:-30}
+    ports:
+      - "18080:8080"
+    volumes:
+      - watcher-data:/data
+
+  web:
+    build: ./web
+    ports:
+      - "18081:8080"
+    depends_on:
+      - api
+
+  worker:
+    build: ./worker
+    environment:
+      LOKI_WATCHER_DB: /data/watcher.db
+      LOKI_WATCHER_LOG_RETENTION_DAYS: ${LOKI_WATCHER_LOG_RETENTION_DAYS:-30}
+      LOKI_WATCHER_COMMAND_RETENTION_DAYS: ${LOKI_WATCHER_COMMAND_RETENTION_DAYS:-30}
+    volumes:
+      - watcher-data:/data
+    depends_on:
+      - api
+
+volumes:
+  watcher-data:

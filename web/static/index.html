@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loki Watcher</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <h1>LOKI WATCHER</h1>
+      <nav class="tabs" aria-label="main sections">
+        <button id="dashboardTab" class="tab active" type="button">Dashboard</button>
+        <button id="clientsTab" class="tab" type="button">Client</button>
+      </nav>
+    </header>
+
+    <section id="dashboard" class="dashboard">
+      <div class="sectionTop">
+        <h2>Dashboard</h2>
+      </div>
+      <section class="backupPanel">
+        <h3>backups</h3>
+        <div class="backupActions">
+          <button id="downloadBackup" type="button">download backup</button>
+          <label class="uploadButton">
+            restore backup
+            <input id="uploadBackup" type="file" accept=".zip,application/zip">
+          </label>
+        </div>
+        <p id="backupStatus" class="statusLine"></p>
+      </section>
+    </section>
+
+    <section id="clientSection" class="hidden">
+      <div class="sectionTop">
+        <h2>Client</h2>
+        <button id="refresh" type="button">refresh</button>
+      </div>
+      <section id="clients" class="clients"></section>
+      <section id="detail" class="detail hidden"></section>
+    </section>
+    <div id="contextMenu" class="contextMenu hidden">
+      <button id="deleteClient" type="button">delete client</button>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

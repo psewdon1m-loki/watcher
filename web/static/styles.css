@@ -1,0 +1,264 @@
+:root {
+  --black: #000;
+  --white: #fff;
+  --green: #57c086;
+  --red: #ea2f2f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--black);
+  color: var(--white);
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 26px;
+}
+
+h1 {
+  margin: 0;
+  color: var(--green);
+  font-size: clamp(42px, 7vw, 82px);
+  line-height: 0.9;
+  letter-spacing: 0;
+}
+
+button {
+  min-height: 40px;
+  border: 0;
+  background: var(--white);
+  color: var(--black);
+  padding: 8px 16px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  transform: scale(1.03);
+}
+
+.tabs {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tab {
+  background: transparent;
+  color: var(--white);
+  border: 1px solid #333;
+}
+
+.tab.active {
+  background: var(--white);
+  color: var(--black);
+  border-color: var(--white);
+}
+
+.sectionTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.sectionTop h2 {
+  color: var(--green);
+  font-size: 34px;
+  margin: 0;
+}
+
+.backupPanel {
+  border: 1px solid #333;
+  padding: 18px;
+  min-height: 240px;
+}
+
+.backupPanel h3 {
+  margin: 0 0 16px;
+  color: var(--green);
+  font-size: 24px;
+}
+
+.backupActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.uploadButton {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  background: var(--white);
+  color: var(--black);
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.uploadButton:hover {
+  transform: scale(1.03);
+}
+
+.uploadButton input {
+  display: none;
+}
+
+.statusLine {
+  min-height: 24px;
+  color: var(--green);
+  margin: 18px 0 0;
+}
+
+.statusLine.error {
+  color: var(--red);
+}
+
+.clients {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(265px, 1fr));
+  gap: 14px;
+}
+
+.card {
+  border: 1px solid var(--white);
+  padding: 16px;
+  cursor: pointer;
+}
+
+.card strong {
+  display: block;
+  color: var(--green);
+  font-size: 22px;
+  margin-bottom: 14px;
+}
+
+.metric {
+  display: grid;
+  grid-template-columns: minmax(84px, 0.8fr) minmax(0, 1.4fr);
+  align-items: start;
+  gap: 14px;
+  padding: 5px 0;
+  border-bottom: 1px solid #222;
+}
+
+.metric span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+
+.metric span:first-child {
+  color: #aaa;
+}
+
+.metric span:last-child {
+  text-align: right;
+}
+
+.detail {
+  border-top: 1px solid var(--green);
+  padding-top: 18px;
+}
+
+.detail h2 {
+  color: var(--green);
+  font-size: 32px;
+  margin: 0 0 14px;
+}
+
+.detail h3 {
+  color: var(--green);
+  font-size: 24px;
+  margin: 22px 0 10px;
+}
+
+.detailTop {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.infoGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(335px, 1fr));
+  gap: 0 24px;
+  border: 1px solid #333;
+  padding: 10px 14px;
+}
+
+.infoGrid .metric {
+  grid-template-columns: minmax(112px, 0.75fr) minmax(0, 1.25fr);
+}
+
+.connectionList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 12px;
+}
+
+.connectionList article {
+  border: 1px solid #333;
+  padding: 12px 14px;
+}
+
+.connectionList strong {
+  display: block;
+  color: var(--green);
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.log {
+  border: 1px solid #333;
+  padding: 12px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.hidden {
+  display: none;
+}
+
+.empty {
+  color: #888;
+  font-size: 22px;
+}
+
+.empty.small {
+  font-size: 16px;
+}
+
+.contextMenu {
+  position: fixed;
+  z-index: 20;
+  border: 1px solid var(--white);
+  background: var(--black);
+  padding: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+}
+
+.contextMenu button {
+  min-width: 160px;
+  background: var(--white);
+  color: var(--black);
+}

@@ -1,0 +1,42 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vs/
+.idea/
+.vscode/
+
+# Python cache / virtualenv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local config / secrets
+.env
+*.env.local
+
+# Runtime data
+watcher.db
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+logs/
+backups/
+uploads/
+
+# Node/web tooling, if added later
+node_modules/
+dist/
+build/
+
+# Archives / generated backups
+*.zip
+*.tar
+*.gz
+*.7z
+*.rar
