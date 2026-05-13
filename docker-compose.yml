@@ -1,19 +1,55 @@
 services:
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+    environment:
+      NGINX_SERVER_NAME: ${LOKI_WATCHER_PUBLIC_SNI:-loki-p-watcher.shmoza.net}
+      NGINX_CERTIFICATE: ${LOKI_NGINX_CERTIFICATE:-/etc/nginx/certs/fullchain.pem}
+      NGINX_CERTIFICATE_KEY: ${LOKI_NGINX_CERTIFICATE_KEY:-/etc/nginx/certs/privkey.pem}
+      NGINX_CLIENT_MAX_BODY_SIZE: ${LOKI_NGINX_CLIENT_MAX_BODY_SIZE:-300m}
+    ports:
+      - "${LOKI_NGINX_HTTP_PORT:-80}:80"
+      - "${LOKI_NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ${LOKI_NGINX_CERTS_HOST_DIR:-./nginx/certs}:/etc/nginx/certs:ro
+      - ./nginx/www:/var/www/certbot:ro
+
   api:
     build: ./api
     environment:
       LOKI_WATCHER_DB: /data/watcher.db
       LOKI_WATCHER_DASHBOARD_TOKEN: ${LOKI_WATCHER_DASHBOARD_TOKEN:-}
-      LOKI_WATCHER_LOG_RETENTION_DAYS: ${LOKI_WATCHER_LOG_RETENTION_DAYS:-30}
+      LOKI_WATCHER_DASHBOARD_USERNAME: ${LOKI_WATCHER_DASHBOARD_USERNAME:-admin}
+      LOKI_WATCHER_DASHBOARD_PASSWORD: ${LOKI_WATCHER_DASHBOARD_PASSWORD:-admin}
+      LOKI_WATCHER_LOG_RETENTION_DAYS: ${LOKI_WATCHER_LOG_RETENTION_DAYS:-7}
+      LOKI_WATCHER_GITHUB_REPOSITORY: ${LOKI_WATCHER_GITHUB_REPOSITORY:-psewdon1m-loki/pc-client}
+      LOKI_WATCHER_GITHUB_RELEASE: ${LOKI_WATCHER_GITHUB_RELEASE:-latest}
+      LOKI_WATCHER_GITHUB_TOKEN: ${LOKI_WATCHER_GITHUB_TOKEN:-}
+      LOKI_WATCHER_UPDATE_CHANNEL: ${LOKI_WATCHER_UPDATE_CHANNEL:-stable}
+      LOKI_WATCHER_UPDATE_CACHE_SECONDS: ${LOKI_WATCHER_UPDATE_CACHE_SECONDS:-300}
+      LOKI_WATCHER_PUBLIC_URL: ${LOKI_WATCHER_PUBLIC_URL:-https://loki-p-watcher.shmoza.net}
+      LOKI_WATCHER_PUBLIC_SNI: ${LOKI_WATCHER_PUBLIC_SNI:-loki-p-watcher.shmoza.net}
+      LOKI_WATCHER_RULE_SET_IDS: ${LOKI_WATCHER_RULE_SET_IDS:-russia-smart,global,whitelist,blacklist}
     ports:
-      - "18080:8080"
+      - "127.0.0.1:${LOKI_WATCHER_API_PORT:-18080}:8080"
     volumes:
       - watcher-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   web:
     build: ./web
     ports:
-      - "18081:8080"
+      - "127.0.0.1:${LOKI_WATCHER_WEB_PORT:-18081}:8080"
     depends_on:
       - api
 
@@ -21,12 +57,28 @@ services:
     build: ./worker
     environment:
       LOKI_WATCHER_DB: /data/watcher.db
-      LOKI_WATCHER_LOG_RETENTION_DAYS: ${LOKI_WATCHER_LOG_RETENTION_DAYS:-30}
+      LOKI_WATCHER_LOG_RETENTION_DAYS: ${LOKI_WATCHER_LOG_RETENTION_DAYS:-7}
       LOKI_WATCHER_COMMAND_RETENTION_DAYS: ${LOKI_WATCHER_COMMAND_RETENTION_DAYS:-30}
     volumes:
       - watcher-data:/data
     depends_on:
       - api
 
+  backup:
+    build: ./worker
+    command: ["python", "/app/backup.py"]
+    environment:
+      LOKI_WATCHER_DB: /data/watcher.db
+      LOKI_WATCHER_BACKUP_DIR: /backups
+      LOKI_WATCHER_BACKUP_INTERVAL_SECONDS: ${LOKI_WATCHER_BACKUP_INTERVAL_SECONDS:-86400}
+      LOKI_WATCHER_BACKUP_RETENTION_DAYS: ${LOKI_WATCHER_BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - watcher-data:/data
+      - watcher-backups:/backups
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   watcher-data:
+  watcher-backups:

@@ -3,6 +3,8 @@
   --white: #fff;
   --green: #57c086;
   --red: #ea2f2f;
+  --line: #333;
+  --muted: #888;
 }
 
 * {
@@ -23,52 +25,44 @@ body {
   padding: 28px 24px 48px;
 }
 
+.loginScreen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 30px;
+  padding: 28px;
+  text-align: center;
+}
+
+.loginPanel {
+  width: min(390px, 100%);
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  padding: 22px;
+  background: var(--black);
+}
+
+.loginPanel input,
+.loginPanel button {
+  width: 100%;
+  min-height: 48px;
+  font-size: 20px;
+}
+
+.loginPanel .statusLine {
+  margin: 2px 0 0;
+  text-align: left;
+}
+
 .top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 26px;
-}
-
-h1 {
-  margin: 0;
-  color: var(--green);
-  font-size: clamp(42px, 7vw, 82px);
-  line-height: 0.9;
-  letter-spacing: 0;
-}
-
-button {
-  min-height: 40px;
-  border: 0;
-  background: var(--white);
-  color: var(--black);
-  padding: 8px 16px;
-  font: inherit;
-  cursor: pointer;
-}
-
-button:hover {
-  transform: scale(1.03);
-}
-
-.tabs {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.tab {
-  background: transparent;
-  color: var(--white);
-  border: 1px solid #333;
-}
-
-.tab.active {
-  background: var(--white);
-  color: var(--black);
-  border-color: var(--white);
 }
 
 .sectionTop {
@@ -79,42 +73,77 @@ button:hover {
   margin-bottom: 18px;
 }
 
-.sectionTop h2 {
+.sectionTop.second {
+  margin-top: 36px;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+h1 {
+  margin: 0;
   color: var(--green);
-  font-size: 34px;
+  font-size: clamp(42px, 7vw, 82px);
+  line-height: 0.9;
+  letter-spacing: 0;
+}
+
+h2,
+h3 {
+  color: var(--green);
   margin: 0;
 }
 
-.backupPanel {
-  border: 1px solid #333;
-  padding: 18px;
-  min-height: 240px;
+h2 {
+  font-size: 34px;
 }
 
-.backupPanel h3 {
-  margin: 0 0 16px;
-  color: var(--green);
+h3 {
   font-size: 24px;
+  margin: 18px 0 12px;
 }
 
-.backupActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+button,
+input {
+  min-height: 40px;
+  border: 0;
+  padding: 8px 14px;
+  font: inherit;
+}
+
+button,
+.uploadButton {
+  background: var(--white);
+  color: var(--black);
+  cursor: pointer;
+}
+
+button:hover,
+.uploadButton:hover {
+  transform: scale(1.03);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+  transform: none;
+}
+
+input {
+  background: #111;
+  color: var(--white);
+  border: 1px solid var(--line);
 }
 
 .uploadButton {
   display: inline-flex;
   min-height: 40px;
   align-items: center;
-  background: var(--white);
-  color: var(--black);
-  padding: 8px 16px;
-  cursor: pointer;
-}
-
-.uploadButton:hover {
-  transform: scale(1.03);
+  padding: 8px 14px;
 }
 
 .uploadButton input {
@@ -131,28 +160,26 @@ button:hover {
   color: var(--red);
 }
 
-.clients {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(265px, 1fr));
-  gap: 14px;
-}
-
-.card {
-  border: 1px solid var(--white);
+.targetPanel,
+.summary article,
+.card,
+.ruleSets article,
+.connectionList article {
+  border: 1px solid var(--line);
   padding: 16px;
-  cursor: pointer;
 }
 
-.card strong {
-  display: block;
-  color: var(--green);
-  font-size: 22px;
-  margin-bottom: 14px;
+.infoGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(335px, 1fr));
+  gap: 0 24px;
+  border: 1px solid var(--line);
+  padding: 10px 14px;
 }
 
 .metric {
   display: grid;
-  grid-template-columns: minmax(84px, 0.8fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(100px, 0.8fr) minmax(0, 1.4fr);
   align-items: start;
   gap: 14px;
   padding: 5px 0;
@@ -173,6 +200,35 @@ button:hover {
   text-align: right;
 }
 
+.summary,
+.clients,
+.ruleSets,
+.connectionList {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(265px, 1fr));
+  gap: 14px;
+}
+
+.summary strong,
+.card strong,
+.ruleSets strong,
+.connectionList strong {
+  display: block;
+  color: var(--green);
+  font-size: 22px;
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+
+.summary article > span {
+  font-size: 34px;
+}
+
+.card {
+  border-color: var(--white);
+  cursor: pointer;
+}
+
 .detail {
   border-top: 1px solid var(--green);
   padding-top: 18px;
@@ -184,63 +240,51 @@ button:hover {
   margin: 0 0 14px;
 }
 
-.detail h3 {
-  color: var(--green);
-  font-size: 24px;
-  margin: 22px 0 10px;
-}
-
 .detailTop {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: space-between;
   margin-bottom: 18px;
 }
 
-.infoGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(335px, 1fr));
-  gap: 0 24px;
-  border: 1px solid #333;
-  padding: 10px 14px;
+.logsPanel {
+  border: 1px solid var(--line);
+  margin-top: 18px;
+  padding: 14px;
 }
 
-.infoGrid .metric {
-  grid-template-columns: minmax(112px, 0.75fr) minmax(0, 1.25fr);
+.logsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
 }
 
-.connectionList {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
-  gap: 12px;
+.logsHeader h3 {
+  margin: 0;
 }
 
-.connectionList article {
-  border: 1px solid #333;
-  padding: 12px 14px;
+.logsHeader button {
+  flex: 0 0 auto;
 }
 
-.connectionList strong {
-  display: block;
+.logsPanel summary {
   color: var(--green);
-  margin-bottom: 8px;
-  overflow-wrap: anywhere;
+  cursor: pointer;
+  margin-bottom: 12px;
 }
 
-.log {
-  border: 1px solid #333;
-  padding: 12px;
-  margin: 8px 0;
+.logBlock {
+  margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: inherit;
 }
 
-.hidden {
-  display: none;
-}
-
 .empty {
-  color: #888;
+  color: var(--muted);
   font-size: 22px;
 }
 
@@ -254,11 +298,12 @@ button:hover {
   border: 1px solid var(--white);
   background: var(--black);
   padding: 8px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
 }
 
 .contextMenu button {
   min-width: 160px;
-  background: var(--white);
-  color: var(--black);
+}
+
+.hidden {
+  display: none;
 }

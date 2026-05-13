@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 
 DB_PATH = os.environ.get("LOKI_WATCHER_DB", "/data/watcher.db")
-LOG_RETENTION_DAYS = int(os.environ.get("LOKI_WATCHER_LOG_RETENTION_DAYS", "30"))
+LOG_RETENTION_DAYS = int(os.environ.get("LOKI_WATCHER_LOG_RETENTION_DAYS", "7"))
 COMMAND_RETENTION_DAYS = int(os.environ.get("LOKI_WATCHER_COMMAND_RETENTION_DAYS", "30"))
 
 

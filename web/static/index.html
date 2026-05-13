@@ -7,40 +7,47 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main class="shell">
+  <section id="loginScreen" class="loginScreen">
+    <h1>LOKI WATCHER</h1>
+    <div class="loginPanel">
+      <input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="username">
+      <input id="password" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="password">
+      <button id="login" type="button">sign in</button>
+      <p id="loginStatus" class="statusLine"></p>
+    </div>
+  </section>
+
+  <main id="appScreen" class="shell hidden">
     <header class="top">
       <h1>LOKI WATCHER</h1>
-      <nav class="tabs" aria-label="main sections">
-        <button id="dashboardTab" class="tab active" type="button">Dashboard</button>
-        <button id="clientsTab" class="tab" type="button">Client</button>
-      </nav>
     </header>
 
-    <section id="dashboard" class="dashboard">
-      <div class="sectionTop">
-        <h2>Dashboard</h2>
-      </div>
-      <section class="backupPanel">
-        <h3>backups</h3>
-        <div class="backupActions">
-          <button id="downloadBackup" type="button">download backup</button>
-          <label class="uploadButton">
-            restore backup
-            <input id="uploadBackup" type="file" accept=".zip,application/zip">
-          </label>
-        </div>
-        <p id="backupStatus" class="statusLine"></p>
-      </section>
-    </section>
-
-    <section id="clientSection" class="hidden">
-      <div class="sectionTop">
-        <h2>Client</h2>
+    <section class="sectionTop">
+      <h2>Dashboard</h2>
+      <div class="actions">
+        <button id="requestData" type="button">request data</button>
+        <button id="downloadBackup" type="button">create backup</button>
+        <label class="uploadButton">
+          restore backup
+          <input id="uploadBackup" type="file" accept=".zip,application/zip">
+        </label>
         <button id="refresh" type="button">refresh</button>
       </div>
-      <section id="clients" class="clients"></section>
-      <section id="detail" class="detail hidden"></section>
     </section>
+    <p id="status" class="statusLine"></p>
+    <section id="dashboard" class="summary"></section>
+
+    <section class="sectionTop second">
+      <h2>Updates</h2>
+    </section>
+    <section id="updates" class="targetPanel"></section>
+
+    <section class="sectionTop second">
+      <h2>Clients</h2>
+    </section>
+    <section id="clients" class="clients"></section>
+    <section id="detail" class="detail hidden"></section>
+
     <div id="contextMenu" class="contextMenu hidden">
       <button id="deleteClient" type="button">delete client</button>
     </div>

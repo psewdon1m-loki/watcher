@@ -116,6 +116,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(200, status, body)
         self.assertEqual("example.com", body["client"]["connections"][0]["host"])
 
+        status, headers, logs_zip = self.raw_request("GET", f"/api/v1/clients/{client_id}/logs.zip")
+        self.assertEqual(200, status)
+        self.assertIn("attachment", headers.get("Content-Disposition", ""))
+        with zipfile.ZipFile(io.BytesIO(logs_zip)) as archive:
+            self.assertIn("logs.txt", archive.namelist())
+            self.assertIn("events.json", archive.namelist())
+
         status, body = self.request("POST", f"/api/v1/commands/{client_id}/collect-now")
         self.assertEqual(200, status, body)
 
@@ -175,6 +182,148 @@ class ApiTests(unittest.TestCase):
         status, body = self.request("GET", "/api/v1/clients")
         self.assertEqual(200, status, body)
         self.assertEqual(client_id, body["clients"][0]["client_id"])
+
+    def test_dashboard_basic_auth(self):
+        old_username = app.DASHBOARD_USERNAME
+        old_password = app.DASHBOARD_PASSWORD
+        try:
+            app.DASHBOARD_USERNAME = "admin"
+            app.DASHBOARD_PASSWORD = "secret"
+
+            status, body = self.request("GET", "/api/v1/clients")
+            self.assertEqual(401, status, body)
+
+            status, body = self.request(
+                "GET",
+                "/api/v1/clients",
+                headers={"Authorization": "Basic YWRtaW46c2VjcmV0"},
+            )
+            self.assertEqual(200, status, body)
+        finally:
+            app.DASHBOARD_USERNAME = old_username
+            app.DASHBOARD_PASSWORD = old_password
+
+    def test_update_state_is_stored_on_client(self):
+        client_id = "client-update"
+        status, body = self.request(
+            "POST",
+            "/api/v1/enroll",
+            {
+                "clientId": client_id,
+                "displayId": "UPD123",
+                "clientSecret": secret(),
+                "device": {"appVersion": "0.1.57"},
+            },
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(200, status, body)
+
+        status, body = self.request(
+            "POST",
+            "/api/v1/update-state",
+            {
+                "clientId": client_id,
+                "displayId": "UPD123",
+                "appVersion": "0.1.57",
+                "routingMode": "russia-smart",
+                "activeRuleSet": "russia-smart",
+                "autoUpdatesEnabled": True,
+                "logsUploadEnabled": False,
+                "updateManifestUrl": "https://watcher.example.test/manifest.json",
+                "lastCheckSuccess": True,
+                "lastCheckMessage": "ok",
+                "ruleSets": [{"id": "russia-smart", "sha256": "abc"}],
+            },
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(200, status, body)
+
+        status, body = self.request("GET", f"/api/v1/clients/{client_id}")
+        self.assertEqual(200, status, body)
+        self.assertTrue(body["client"]["auto_updates_enabled"])
+        self.assertFalse(body["client"]["logs_upload_enabled"])
+        self.assertEqual("reported", body["client"]["update_report_status"])
+        self.assertEqual("https://watcher.example.test/manifest.json", body["client"]["update_manifest_url"])
+
+    def test_request_data_queues_online_update_checks(self):
+        online_id = "client-online"
+        offline_id = "client-offline"
+        for client_id in (online_id, offline_id):
+            status, body = self.request(
+                "POST",
+                "/api/v1/enroll",
+                {
+                    "clientId": client_id,
+                    "displayId": client_id,
+                    "clientSecret": secret(),
+                    "device": {"appVersion": "0.1.57"},
+                },
+                {"Content-Type": "application/json"},
+            )
+            self.assertEqual(200, status, body)
+
+        with app.connect(app.DB_PATH) as db:
+            db.execute("UPDATE clients SET last_seen_at = ? WHERE client_id = ?", ("2020-01-01T00:00:00+00:00", offline_id))
+
+        status, body = self.request("POST", "/api/v1/request-data")
+        self.assertEqual(200, status, body)
+        self.assertEqual(1, body["queued"])
+        self.assertEqual(1, len(body["skipped"]))
+
+        timestamp = str(int(time.time()))
+        status, body = self.request(
+            "GET",
+            f"/api/v1/commands/{online_id}",
+            headers={
+                "X-Loki-Client-Id": online_id,
+                "X-Loki-Timestamp": timestamp,
+                "X-Loki-Signature": signature("GET", f"/api/v1/commands/{online_id}", timestamp, b""),
+            },
+        )
+        self.assertEqual(200, status, body)
+        self.assertEqual("check_updates", body["commands"][0]["type"])
+
+    def test_manifest_can_be_built_from_release_bundle(self):
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json", json.dumps({
+                "channel": "stable",
+                "version": "0.1.57",
+                "installer": None,
+                "ruleSets": [],
+                "watcher": None,
+            }))
+            archive.writestr("LokiClientSetup-0.1.57-win-x64.exe", b"installer")
+            archive.writestr("russia-smart.zip", b"rule")
+
+        release = {
+            "tag_name": "v0.1.57",
+            "published_at": "2026-05-13T08:00:00Z",
+            "assets": [{
+                "name": "LokiClientRelease-0.1.57-win-x64.zip",
+                "browser_download_url": "https://github.test/bundle.zip",
+            }],
+        }
+
+        old_request_json = app.request_json
+        old_request_bytes = app.request_bytes
+        old_public_url = app.WATCHER_PUBLIC_URL
+        try:
+            app.request_json = lambda url: release
+            app.request_bytes = lambda url, timeout=30: bundle.getvalue()
+            app.WATCHER_PUBLIC_URL = "https://watcher.example.test"
+
+            manifest = app.build_manifest()
+
+            self.assertEqual("0.1.57", manifest["version"])
+            self.assertEqual("https://watcher.example.test/assets/LokiClientSetup-0.1.57-win-x64.exe", manifest["installer"]["url"])
+            self.assertEqual(hashlib.sha256(b"installer").hexdigest(), manifest["installer"]["sha256"])
+            self.assertEqual("russia-smart", manifest["ruleSets"][0]["id"])
+            self.assertEqual("https://watcher.example.test/assets/russia-smart.zip", manifest["ruleSets"][0]["url"])
+        finally:
+            app.request_json = old_request_json
+            app.request_bytes = old_request_bytes
+            app.WATCHER_PUBLIC_URL = old_public_url
 
 
 if __name__ == "__main__":

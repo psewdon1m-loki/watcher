@@ -17,6 +17,10 @@ venv/
 # Local config / secrets
 .env
 *.env.local
+nginx/certs/*
+!nginx/certs/README.md
+nginx/www/*
+!nginx/www/.gitkeep
 
 # Runtime data
 watcher.db
