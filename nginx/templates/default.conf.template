@@ -13,8 +13,13 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name ${NGINX_SERVER_NAME};
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $api_upstream api:8080;
+    set $web_upstream web:8080;
 
     ssl_certificate ${NGINX_CERTIFICATE};
     ssl_certificate_key ${NGINX_CERTIFICATE_KEY};
@@ -32,26 +37,26 @@ server {
     proxy_set_header X-Forwarded-Host $host;
 
     location = /health {
-        proxy_pass http://api:8080;
+        proxy_pass http://$api_upstream;
     }
 
     location = /manifest.json {
-        proxy_pass http://api:8080;
+        proxy_pass http://$api_upstream;
     }
 
     location /assets/ {
-        proxy_pass http://api:8080;
+        proxy_pass http://$api_upstream;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
 
     location /api/ {
-        proxy_pass http://api:8080;
+        proxy_pass http://$api_upstream;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
 
     location / {
-        proxy_pass http://web:8080;
+        proxy_pass http://$web_upstream;
     }
 }
