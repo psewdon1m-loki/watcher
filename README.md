@@ -98,6 +98,12 @@ Watcher is the source of truth for client update metadata:
 
 GitHub Releases stay as artifact storage. The preferred release asset is one bundle zip named like `LokiClientRelease-<version>-win-x64.zip` containing the installer, `manifest.json`, and rule-set zip files. Separate release assets still work as a fallback.
 
+Watcher rewrites installer and rule-set URLs in `/manifest.json` to its own
+`/assets/<file>` endpoints. `/assets/<file>` serves the file from the release
+bundle zip when present, or downloads the matching separate GitHub Release asset
+when the bundle is unavailable. This keeps client update traffic pointed at the
+Watcher host instead of GitHub.
+
 ## Backups
 
 The dashboard can create and restore a zip backup through the Dashboard section. The backup contains the SQLite watcher database, including client identities, telemetry events, commands, update state, retained log payloads and server-side settings stored in the database.

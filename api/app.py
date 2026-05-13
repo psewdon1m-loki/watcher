@@ -298,8 +298,9 @@ def discover_installer(release: dict[str, Any], assets: dict[str, dict[str, Any]
         if name.startswith("LokiClientSetup-") and name.endswith("-win-x64.exe")
     )
     if candidates:
-        asset = assets[candidates[-1]]
-        return {"url": asset_url(asset), "sha256": sha256_url(asset_url(asset)), "mandatory": False}
+        file_name = candidates[-1]
+        asset = assets[file_name]
+        return {"url": public_asset_url(file_name), "sha256": sha256_url(asset_url(asset)), "mandatory": False}
 
     bundled = sorted(
         name
@@ -319,7 +320,7 @@ def discover_rule_sets(release: dict[str, Any], assets: dict[str, dict[str, Any]
         file_name = f"{rule_set_id}.zip"
         asset = assets.get(file_name)
         if asset:
-            result.append({"id": rule_set_id, "version": version, "url": asset_url(asset), "sha256": sha256_url(asset_url(asset))})
+            result.append({"id": rule_set_id, "version": version, "url": public_asset_url(file_name), "sha256": sha256_url(asset_url(asset))})
             continue
         if file_name in bundle_entries:
             result.append({"id": rule_set_id, "version": version, "url": public_asset_url(file_name), "sha256": sha256_bytes(bundle_entries[file_name])})
@@ -370,11 +371,17 @@ def cached_manifest() -> dict[str, Any]:
     return json.loads(cached_manifest_bytes().decode("utf-8"))
 
 
-def bundle_file_bytes(file_name: str) -> bytes | None:
+def release_file_bytes(file_name: str) -> bytes | None:
     release = request_json(github_api_url())
     assets = release_assets(release)
     entries = release_bundle_entries(release, assets)
-    return entries.get(file_name)
+    if file_name in entries:
+        return entries[file_name]
+
+    asset = assets.get(file_name)
+    if asset is None:
+        return None
+    return request_bytes(asset_url(asset), timeout=120)
 
 
 def client_ip(handler: BaseHTTPRequestHandler) -> str:
@@ -640,7 +647,7 @@ class WatcherHandler(BaseHTTPRequestHandler):
             if not file_name or "/" in file_name or "\\" in file_name:
                 json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid_asset"})
                 return
-            payload = bundle_file_bytes(file_name)
+            payload = release_file_bytes(file_name)
             if payload is None:
                 json_response(self, HTTPStatus.NOT_FOUND, {"error": "asset_not_found"})
                 return

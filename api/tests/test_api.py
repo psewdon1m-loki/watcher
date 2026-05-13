@@ -325,6 +325,98 @@ class ApiTests(unittest.TestCase):
             app.request_bytes = old_request_bytes
             app.WATCHER_PUBLIC_URL = old_public_url
 
+    def test_manifest_rewrites_separate_release_assets_to_watcher_urls(self):
+        release = {
+            "tag_name": "v0.1.60",
+            "published_at": "2026-05-13T08:00:00Z",
+            "assets": [
+                {
+                    "name": "manifest.json",
+                    "browser_download_url": "https://github.test/manifest.json",
+                },
+                {
+                    "name": "LokiClientSetup-0.1.60-win-x64.exe",
+                    "browser_download_url": "https://github.test/LokiClientSetup-0.1.60-win-x64.exe",
+                },
+                {
+                    "name": "russia-smart.zip",
+                    "browser_download_url": "https://github.test/russia-smart.zip",
+                },
+            ],
+        }
+        upstream_manifest = json.dumps({
+            "channel": "stable",
+            "version": "0.1.60",
+            "installer": {
+                "url": "https://github.test/LokiClientSetup-0.1.60-win-x64.exe",
+                "sha256": "old",
+                "mandatory": False,
+            },
+            "ruleSets": [{
+                "id": "russia-smart",
+                "version": "0.1.60",
+                "url": "https://github.test/russia-smart.zip",
+                "sha256": "old",
+            }],
+            "watcher": None,
+        }).encode("utf-8")
+        payloads = {
+            "https://github.test/manifest.json": upstream_manifest,
+            "https://github.test/LokiClientSetup-0.1.60-win-x64.exe": b"installer",
+            "https://github.test/russia-smart.zip": b"rule",
+        }
+
+        old_request_json = app.request_json
+        old_request_bytes = app.request_bytes
+        old_sha256_url = app.sha256_url
+        old_public_url = app.WATCHER_PUBLIC_URL
+        old_rule_set_ids = app.RULE_SET_IDS
+        try:
+            app.request_json = lambda url: release
+            app.request_bytes = lambda url, timeout=30: payloads[url]
+            app.sha256_url = lambda url: hashlib.sha256(payloads[url]).hexdigest()
+            app.WATCHER_PUBLIC_URL = "https://watcher.example.test"
+            app.RULE_SET_IDS = ["russia-smart"]
+
+            manifest = app.build_manifest()
+
+            self.assertEqual(
+                "https://watcher.example.test/assets/LokiClientSetup-0.1.60-win-x64.exe",
+                manifest["installer"]["url"],
+            )
+            self.assertEqual(hashlib.sha256(b"installer").hexdigest(), manifest["installer"]["sha256"])
+            self.assertEqual("https://watcher.example.test/assets/russia-smart.zip", manifest["ruleSets"][0]["url"])
+            self.assertEqual(hashlib.sha256(b"rule").hexdigest(), manifest["ruleSets"][0]["sha256"])
+        finally:
+            app.request_json = old_request_json
+            app.request_bytes = old_request_bytes
+            app.sha256_url = old_sha256_url
+            app.WATCHER_PUBLIC_URL = old_public_url
+            app.RULE_SET_IDS = old_rule_set_ids
+
+    def test_assets_endpoint_serves_separate_release_asset(self):
+        release = {
+            "tag_name": "v0.1.60",
+            "assets": [{
+                "name": "russia-smart.zip",
+                "browser_download_url": "https://github.test/russia-smart.zip",
+            }],
+        }
+        old_request_json = app.request_json
+        old_request_bytes = app.request_bytes
+        try:
+            app.request_json = lambda url: release
+            app.request_bytes = lambda url, timeout=30: b"rule"
+
+            status, headers, payload = self.raw_request("GET", "/assets/russia-smart.zip")
+
+            self.assertEqual(200, status)
+            self.assertEqual(b"rule", payload)
+            self.assertIn("attachment", headers.get("Content-Disposition", ""))
+        finally:
+            app.request_json = old_request_json
+            app.request_bytes = old_request_bytes
+
 
 if __name__ == "__main__":
     unittest.main()
