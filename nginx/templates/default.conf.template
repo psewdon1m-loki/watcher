@@ -56,6 +56,27 @@ server {
         proxy_send_timeout 300s;
     }
 
+    location = / {
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
+        proxy_pass http://$web_upstream;
+    }
+
+    location = /app.js {
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
+        proxy_pass http://$web_upstream;
+    }
+
+    location = /styles.css {
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
+        proxy_pass http://$web_upstream;
+    }
+
     location / {
         proxy_pass http://$web_upstream;
     }
