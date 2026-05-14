@@ -247,7 +247,11 @@ async function loadDetail(clientId) {
     </div>
     <h2>${escapeHtml(client.display_id)}</h2>
     <section class="infoGrid">
-      ${metric("client id", client.client_id)}
+      ${metric("client id", client.display_id)}
+      ${metric("user", client.username)}
+      ${metric("original ip", client.original_ip)}
+      ${metric("region", client.region)}
+      ${metric("provider", client.provider)}
       ${metric("version", client.app_version)}
       ${metric("auto updates", client.auto_updates_enabled)}
       ${metric("logs upload", client.logs_upload_enabled)}

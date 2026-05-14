@@ -30,6 +30,7 @@ Then set production credentials and host values in `.env`:
 ```env
 LOKI_WATCHER_DASHBOARD_USERNAME=<admin-user>
 LOKI_WATCHER_DASHBOARD_PASSWORD=<strong-password>
+LOKI_WATCHER_IP_GEOLOOKUP_ENABLED=1
 LOKI_WATCHER_PUBLIC_URL=https://loki-p-watcher.shmoza.net
 LOKI_WATCHER_PUBLIC_SNI=loki-p-watcher.shmoza.net
 LOKI_NGINX_HTTP_PORT=80
@@ -113,7 +114,7 @@ The scheduled backup service writes one zip dump per interval to the separate `w
 ## Security Notes
 
 - Operational telemetry and update state are mandatory in the client. The app setting controls optional log-line upload only.
-- The client does not send original IP. The API derives it from the request source.
+- The client does not send original IP. The API derives it from the request source and, when `LOKI_WATCHER_IP_GEOLOOKUP_ENABLED=1`, resolves a best-effort region/provider for public IPs.
 - After enrollment, telemetry batches and command polling are signed with HMAC SHA-256.
 - Deleting a client from the dashboard removes its server-side row, events and commands. A still-installed client can enroll again on the next telemetry/launch cycle.
 - Dashboard auth is controlled by `LOKI_WATCHER_DASHBOARD_USERNAME` and `LOKI_WATCHER_DASHBOARD_PASSWORD`. Legacy bearer-token auth via `LOKI_WATCHER_DASHBOARD_TOKEN` still works when username/password are not set.

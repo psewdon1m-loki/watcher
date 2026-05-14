@@ -74,9 +74,9 @@ class ApiTests(unittest.TestCase):
                 "clientId": client_id,
                 "displayId": "X8Q3L7M2Z9K5R1PA",
                 "clientSecret": secret(),
-                "device": {"deviceType": "desktop-windows"},
+                "device": {"deviceType": "desktop-windows", "userName": "tester"},
             },
-            {"Content-Type": "application/json"},
+            {"Content-Type": "application/json", "X-Forwarded-For": "10.2.3.4"},
         )
         self.assertEqual(200, status, body)
 
@@ -102,6 +102,7 @@ class ApiTests(unittest.TestCase):
                 "X-Loki-Client-Id": client_id,
                 "X-Loki-Timestamp": timestamp,
                 "X-Loki-Signature": signature("POST", "/api/v1/telemetry/batch", timestamp, raw),
+                "X-Forwarded-For": "10.2.3.4",
             },
         )
         self.assertEqual(200, status, body)
@@ -114,6 +115,11 @@ class ApiTests(unittest.TestCase):
 
         status, body = self.request("GET", f"/api/v1/clients/{client_id}")
         self.assertEqual(200, status, body)
+        self.assertEqual("X8Q3L7M2Z9K5R1PA", body["client"]["display_id"])
+        self.assertEqual("tester", body["client"]["username"])
+        self.assertEqual("10.2.3.4", body["client"]["original_ip"])
+        self.assertEqual("local/private", body["client"]["region"])
+        self.assertEqual("local/private", body["client"]["provider"])
         self.assertEqual("example.com", body["client"]["connections"][0]["host"])
 
         status, headers, logs_zip = self.raw_request("GET", f"/api/v1/clients/{client_id}/logs.zip")

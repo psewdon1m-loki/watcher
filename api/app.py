@@ -38,6 +38,7 @@ UPDATE_CHANNEL = os.environ.get("LOKI_WATCHER_UPDATE_CHANNEL", "stable").strip()
 UPDATE_CACHE_SECONDS = max(0, int(os.environ.get("LOKI_WATCHER_UPDATE_CACHE_SECONDS", "300")))
 WATCHER_PUBLIC_URL = os.environ.get("LOKI_WATCHER_PUBLIC_URL", "https://loki-p-watcher.shmoza.net").strip().rstrip("/")
 WATCHER_PUBLIC_SNI = os.environ.get("LOKI_WATCHER_PUBLIC_SNI", "loki-p-watcher.shmoza.net").strip()
+IP_GEOLOOKUP_ENABLED = os.environ.get("LOKI_WATCHER_IP_GEOLOOKUP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 RULE_SET_IDS = [
     item.strip()
     for item in os.environ.get("LOKI_WATCHER_RULE_SET_IDS", "russia-smart,global,whitelist,blacklist").split(",")
@@ -45,6 +46,7 @@ RULE_SET_IDS = [
 ]
 _manifest_cache_body: bytes | None = None
 _manifest_cache_expires_at = 0.0
+_ip_info_cache: dict[str, dict[str, str]] = {}
 
 
 def utc_now() -> str:
@@ -70,6 +72,7 @@ def init_db(path: str | None = None) -> None:
                 installed_at TEXT,
                 original_ip TEXT,
                 region TEXT NOT NULL DEFAULT 'unknown',
+                provider TEXT,
                 device_json TEXT NOT NULL DEFAULT '{}',
                 routing_mode TEXT,
                 connections_json TEXT NOT NULL DEFAULT '[]',
@@ -123,6 +126,9 @@ def init_db(path: str | None = None) -> None:
             "ALTER TABLE clients ADD COLUMN os TEXT",
             "ALTER TABLE clients ADD COLUMN windows_version TEXT",
             "ALTER TABLE clients ADD COLUMN installed_at TEXT",
+            "ALTER TABLE clients ADD COLUMN original_ip TEXT",
+            "ALTER TABLE clients ADD COLUMN region TEXT NOT NULL DEFAULT 'unknown'",
+            "ALTER TABLE clients ADD COLUMN provider TEXT",
             "ALTER TABLE clients ADD COLUMN routing_mode TEXT",
             "ALTER TABLE clients ADD COLUMN connections_json TEXT NOT NULL DEFAULT '[]'",
             "ALTER TABLE clients ADD COLUMN auto_updates_enabled INTEGER",
@@ -208,8 +214,8 @@ def request_bytes(url: str, timeout: int = 30) -> bytes:
         return response.read()
 
 
-def request_json(url: str) -> dict[str, Any]:
-    return json.loads(request_bytes(url).decode("utf-8"))
+def request_json(url: str, timeout: int = 30) -> dict[str, Any]:
+    return json.loads(request_bytes(url, timeout=timeout).decode("utf-8"))
 
 
 def sha256_bytes(payload: bytes) -> str:
@@ -392,13 +398,52 @@ def client_ip(handler: BaseHTTPRequestHandler) -> str:
 
 
 def region_for_ip(value: str) -> str:
+    return network_info_for_ip(value)["region"]
+
+
+def network_info_for_ip(value: str) -> dict[str, str]:
+    value = (value or "").strip()
+    if not value:
+        return {"region": "unknown", "provider": "unknown"}
+    cached = _ip_info_cache.get(value)
+    if cached is not None:
+        return cached
+
     try:
         address = ipaddress.ip_address(value)
     except ValueError:
-        return "unknown"
+        info = {"region": "unknown", "provider": "unknown"}
+        _ip_info_cache[value] = info
+        return info
     if address.is_private or address.is_loopback or address.is_link_local:
-        return "local/private"
-    return "unknown"
+        info = {"region": "local/private", "provider": "local/private"}
+        _ip_info_cache[value] = info
+        return info
+    if not IP_GEOLOOKUP_ENABLED:
+        info = {"region": "unknown", "provider": "unknown"}
+        _ip_info_cache[value] = info
+        return info
+
+    try:
+        payload = request_json(f"http://ip-api.com/json/{value}?fields=status,country,regionName,city,isp", timeout=2)
+        if payload.get("status") == "success":
+            place_parts = [
+                str(part).strip()
+                for part in [payload.get("country"), payload.get("city") or payload.get("regionName")]
+                if part and str(part).strip()
+            ]
+            info = {
+                "region": ", ".join(place_parts) if place_parts else "unknown",
+                "provider": str(payload.get("isp") or "unknown"),
+            }
+            _ip_info_cache[value] = info
+            return info
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+        pass
+
+    info = {"region": "unknown", "provider": "unknown"}
+    _ip_info_cache[value] = info
+    return info
 
 
 def dashboard_authorized(handler: BaseHTTPRequestHandler) -> bool:
@@ -578,7 +623,7 @@ def dashboard_payload() -> dict[str, Any]:
     with connect() as db:
         rows = db.execute(
             """
-            SELECT client_id, display_id, username, machine_name, app_version, original_ip, region, status,
+            SELECT client_id, display_id, username, machine_name, app_version, original_ip, region, provider, status,
                    routing_mode, connections_json, total_traffic_bytes, last_seen_at, device_json,
                    auto_updates_enabled, logs_upload_enabled, update_manifest_url,
                    update_fallback_manifest_url, update_last_check_success, update_last_check_message,
@@ -742,6 +787,8 @@ class WatcherHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.BAD_REQUEST, {"error": "missing_identity"})
             return
 
+        ip = client_ip(self)
+        network = network_info_for_ip(ip)
         now = utc_now()
         with connect() as db:
             exists = db.execute("SELECT 1 FROM clients WHERE client_id = ?", (client_id,)).fetchone()
@@ -749,17 +796,20 @@ class WatcherHandler(BaseHTTPRequestHandler):
                 db.execute(
                     """
                     INSERT INTO clients (
-                        client_id, display_id, client_secret, region, status,
+                        client_id, display_id, client_secret, original_ip, region, provider, status,
                         total_traffic_bytes, created_at, last_seen_at
-                    ) VALUES (?, ?, '', 'unknown', 'unknown', 0, ?, ?)
+                    ) VALUES (?, ?, '', ?, ?, ?, 'unknown', 0, ?, ?)
                     """,
-                    (client_id, display_id, now, now),
+                    (client_id, display_id, ip, network["region"], network["provider"], now, now),
                 )
 
             db.execute(
                 """
                 UPDATE clients SET
                     display_id = ?,
+                    original_ip = COALESCE(NULLIF(original_ip, ''), ?),
+                    region = CASE WHEN region IS NULL OR region = '' OR region IN ('unknown', 'local/private') THEN ? ELSE region END,
+                    provider = CASE WHEN provider IS NULL OR provider = '' OR provider IN ('unknown', 'local/private') THEN ? ELSE provider END,
                     app_version = COALESCE(?, app_version),
                     routing_mode = COALESCE(?, routing_mode),
                     auto_updates_enabled = ?,
@@ -776,6 +826,9 @@ class WatcherHandler(BaseHTTPRequestHandler):
                 """,
                 (
                     display_id,
+                    ip,
+                    network["region"],
+                    network["provider"],
                     body.get("appVersion"),
                     body.get("routingMode"),
                     1 if body.get("autoUpdatesEnabled") else 0,
@@ -827,16 +880,17 @@ class WatcherHandler(BaseHTTPRequestHandler):
                 return
 
             ip = client_ip(self)
+            network = network_info_for_ip(ip)
             now = utc_now()
             with connect() as db:
                 db.execute(
                     """
                     INSERT INTO clients (
                         client_id, display_id, client_secret, username, machine_name, app_version,
-                        os, windows_version, installed_at, original_ip, region, device_json,
+                        os, windows_version, installed_at, original_ip, region, provider, device_json,
                         status, total_traffic_bytes, created_at, last_seen_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disconnected', 0, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disconnected', 0, ?, ?)
                     ON CONFLICT(client_id) DO UPDATE SET
                         display_id = excluded.display_id,
                         client_secret = excluded.client_secret,
@@ -846,8 +900,9 @@ class WatcherHandler(BaseHTTPRequestHandler):
                         os = excluded.os,
                         windows_version = excluded.windows_version,
                         installed_at = COALESCE(clients.installed_at, excluded.installed_at),
-                        original_ip = excluded.original_ip,
-                        region = excluded.region,
+                        original_ip = COALESCE(NULLIF(clients.original_ip, ''), excluded.original_ip),
+                        region = CASE WHEN clients.region IS NULL OR clients.region = '' OR clients.region IN ('unknown', 'local/private') THEN excluded.region ELSE clients.region END,
+                        provider = CASE WHEN clients.provider IS NULL OR clients.provider = '' OR clients.provider IN ('unknown', 'local/private') THEN excluded.provider ELSE clients.provider END,
                         device_json = excluded.device_json,
                         last_seen_at = excluded.last_seen_at;
                     """,
@@ -862,7 +917,8 @@ class WatcherHandler(BaseHTTPRequestHandler):
                         device_value(device, "windowsVersion"),
                         device_value(device, "installedAt"),
                         ip,
-                        region_for_ip(ip),
+                        network["region"],
+                        network["provider"],
                         json.dumps(device),
                         now,
                         now,
@@ -892,6 +948,7 @@ class WatcherHandler(BaseHTTPRequestHandler):
                 return
 
             ip = client_ip(self)
+            network = network_info_for_ip(ip)
             now = utc_now()
             status = "unknown"
             total = 0
@@ -929,8 +986,9 @@ class WatcherHandler(BaseHTTPRequestHandler):
             db.execute(
                 """
                 UPDATE clients SET
-                    original_ip = ?,
-                    region = ?,
+                    original_ip = COALESCE(NULLIF(original_ip, ''), ?),
+                    region = CASE WHEN region IS NULL OR region = '' OR region IN ('unknown', 'local/private') THEN ? ELSE region END,
+                    provider = CASE WHEN provider IS NULL OR provider = '' OR provider IN ('unknown', 'local/private') THEN ? ELSE provider END,
                     username = COALESCE(?, username),
                     machine_name = COALESCE(?, machine_name),
                     app_version = COALESCE(?, app_version),
@@ -947,7 +1005,8 @@ class WatcherHandler(BaseHTTPRequestHandler):
                 """,
                 (
                     ip,
-                    region_for_ip(ip),
+                    network["region"],
+                    network["provider"],
                     device_value(device, "userName"),
                     device_value(device, "machineName"),
                     device_value(device, "appVersion"),
@@ -1006,7 +1065,7 @@ class WatcherHandler(BaseHTTPRequestHandler):
         with connect() as db:
             rows = db.execute(
                 """
-                SELECT client_id, display_id, username, machine_name, app_version, original_ip, region, status,
+                SELECT client_id, display_id, username, machine_name, app_version, original_ip, region, provider, status,
                        routing_mode, connections_json, total_traffic_bytes, last_seen_at, device_json,
                        auto_updates_enabled, logs_upload_enabled, update_manifest_url,
                        update_fallback_manifest_url, update_last_check_success, update_last_check_message,
@@ -1028,7 +1087,7 @@ class WatcherHandler(BaseHTTPRequestHandler):
             client = db.execute(
                 """
                 SELECT client_id, display_id, username, machine_name, app_version, os, windows_version,
-                       installed_at, original_ip, region, status, routing_mode, connections_json,
+                       installed_at, original_ip, region, provider, status, routing_mode, connections_json,
                        total_traffic_bytes, last_seen_at, device_json,
                        auto_updates_enabled, logs_upload_enabled, update_manifest_url,
                        update_fallback_manifest_url, update_last_check_success, update_last_check_message,
