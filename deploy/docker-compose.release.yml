@@ -1,41 +1,30 @@
 services:
   init-permissions:
-    image: ${LOKI_WATCHER_WORKER_IMAGE:-watcher-worker:local}
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
+    image: ${LOKI_WATCHER_WORKER_IMAGE:?immutable worker image digest is required}
     user: "0:0"
     command: ["sh", "-c", "chown -R watcher:watcher /data /backups"]
     restart: "no"
-    volumes:
-      - watcher-data:/data
-      - watcher-backups:/backups
+    volumes: ["watcher-data:/data", "watcher-backups:/backups"]
     read_only: true
     cap_drop: ["ALL"]
     cap_add: ["CHOWN"]
-    security_opt:
-      - no-new-privileges:true
+    security_opt: ["no-new-privileges:true"]
     logging:
       driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
+      options: {max-size: "5m", max-file: "2"}
 
   api:
-    image: ${LOKI_WATCHER_API_IMAGE:-watcher-api:local}
-    build:
-      context: .
-      dockerfile: api/Dockerfile
+    image: ${LOKI_WATCHER_API_IMAGE:?immutable API image digest is required}
     restart: unless-stopped
     environment:
       LOKI_WATCHER_DB: /data/watcher.db
-      LOKI_WATCHER_VERSION: ${LOKI_WATCHER_VERSION:-0.1.0}
-      LOKI_WATCHER_SERVER_REPOSITORY: ${LOKI_WATCHER_SERVER_REPOSITORY:-psewdon1m-loki/watcher}
-      LOKI_WATCHER_BACKUP_ENCRYPTION_KEY: ${LOKI_WATCHER_BACKUP_ENCRYPTION_KEY:?LOKI_WATCHER_BACKUP_ENCRYPTION_KEY must be generated}
-      LOKI_WATCHER_LOCAL_CONTROL_TOKEN: ${LOKI_WATCHER_LOCAL_CONTROL_TOKEN:-}
-      LOKI_WATCHER_DASHBOARD_TOKEN: ${LOKI_WATCHER_DASHBOARD_TOKEN:-}
-      LOKI_WATCHER_DASHBOARD_USERNAME: ${LOKI_WATCHER_DASHBOARD_USERNAME:?LOKI_WATCHER_DASHBOARD_USERNAME must be set}
-      LOKI_WATCHER_DASHBOARD_PASSWORD: ${LOKI_WATCHER_DASHBOARD_PASSWORD:?LOKI_WATCHER_DASHBOARD_PASSWORD must be set}
+      LOKI_WATCHER_VERSION: ${LOKI_WATCHER_VERSION:?release version is required}
+      LOKI_WATCHER_SERVER_REPOSITORY: psewdon1m-loki/watcher
+      LOKI_WATCHER_DASHBOARD_USERNAME: ${LOKI_WATCHER_DASHBOARD_USERNAME:?operator username is required}
+      LOKI_WATCHER_DASHBOARD_PASSWORD: ${LOKI_WATCHER_DASHBOARD_PASSWORD:?operator password is required}
+      LOKI_WATCHER_BACKUP_ENCRYPTION_KEY: ${LOKI_WATCHER_BACKUP_ENCRYPTION_KEY:?backup recovery key is required}
+      LOKI_WATCHER_LOCAL_CONTROL_TOKEN: ${LOKI_WATCHER_LOCAL_CONTROL_TOKEN:?local update-control token is required}
+      LOKI_WATCHER_UPDATER_SOCKET: /run/vpnenus-updater/updater.sock
       LOKI_WATCHER_LOG_RETENTION_DAYS: ${LOKI_WATCHER_LOG_RETENTION_DAYS:-30}
       LOKI_WATCHER_TELEMETRY_RETENTION_DAYS: ${LOKI_WATCHER_TELEMETRY_RETENTION_DAYS:-30}
       LOKI_WATCHER_ANALYTICS_RETENTION_DAYS: ${LOKI_WATCHER_ANALYTICS_RETENTION_DAYS:-30}
@@ -44,14 +33,14 @@ services:
       LOKI_WATCHER_MAX_ANALYTICS_REQUEST_BYTES: ${LOKI_WATCHER_MAX_ANALYTICS_REQUEST_BYTES:-16777216}
       LOKI_WATCHER_MAX_ANALYTICS_REPORT_BYTES: ${LOKI_WATCHER_MAX_ANALYTICS_REPORT_BYTES:-8388608}
       LOKI_WATCHER_MAX_SUBSCRIPTION_BYTES: ${LOKI_WATCHER_MAX_SUBSCRIPTION_BYTES:-2097152}
-      LOKI_WATCHER_MAX_BACKUP_BYTES: ${LOKI_WATCHER_MAX_BACKUP_BYTES:-134217728}
-      LOKI_WATCHER_MAX_BACKUP_UNCOMPRESSED_BYTES: ${LOKI_WATCHER_MAX_BACKUP_UNCOMPRESSED_BYTES:-268435456}
-      LOKI_WATCHER_MAX_BACKUP_MEMBER_BYTES: ${LOKI_WATCHER_MAX_BACKUP_MEMBER_BYTES:-268435456}
       LOKI_WATCHER_CONNECTION_SCAN_INTERVAL_MINUTES: ${LOKI_WATCHER_CONNECTION_SCAN_INTERVAL_MINUTES:-15}
       LOKI_WATCHER_PASARGUARD_BASE_URL: ${LOKI_WATCHER_PASARGUARD_BASE_URL:-}
       LOKI_WATCHER_PASARGUARD_USER_TEMPLATE_ID: ${LOKI_WATCHER_PASARGUARD_USER_TEMPLATE_ID:-}
       LOKI_WATCHER_PASARGUARD_API_KEY: ${LOKI_WATCHER_PASARGUARD_API_KEY:-}
       LOKI_WATCHER_PASARGUARD_TIMEOUT_SECONDS: ${LOKI_WATCHER_PASARGUARD_TIMEOUT_SECONDS:-15}
+      LOKI_WATCHER_MAX_BACKUP_BYTES: ${LOKI_WATCHER_MAX_BACKUP_BYTES:-134217728}
+      LOKI_WATCHER_MAX_BACKUP_UNCOMPRESSED_BYTES: ${LOKI_WATCHER_MAX_BACKUP_UNCOMPRESSED_BYTES:-268435456}
+      LOKI_WATCHER_MAX_BACKUP_MEMBER_BYTES: ${LOKI_WATCHER_MAX_BACKUP_MEMBER_BYTES:-268435456}
       LOKI_WATCHER_AUDIT_MAX_ENTRIES: ${LOKI_WATCHER_AUDIT_MAX_ENTRIES:-10000}
       LOKI_WATCHER_AUDIT_RETENTION_DAYS: ${LOKI_WATCHER_AUDIT_RETENTION_DAYS:-30}
       LOKI_WATCHER_AUDIT_MAX_BYTES: ${LOKI_WATCHER_AUDIT_MAX_BYTES:-67108864}
@@ -59,25 +48,23 @@ services:
       LOKI_WATCHER_GITHUB_REPOSITORY: ${LOKI_WATCHER_GITHUB_REPOSITORY:-psewdon1m-loki/client}
       LOKI_WATCHER_GITHUB_TOKEN: ${LOKI_WATCHER_GITHUB_TOKEN:-}
       LOKI_WATCHER_UPDATE_CACHE_SECONDS: ${LOKI_WATCHER_UPDATE_CACHE_SECONDS:-300}
-      LOKI_WATCHER_PUBLIC_SNI: ${LOKI_WATCHER_PUBLIC_SNI:-cake.shmoza.net}
+      LOKI_WATCHER_PUBLIC_SNI: ${LOKI_WATCHER_PUBLIC_SNI:?public SNI is required}
     ports:
       - "127.0.0.1:${LOKI_WATCHER_API_PORT:-18080}:8080"
     volumes:
       - watcher-data:/data
+      - /run/vpnenus-updater:/run/vpnenus-updater:ro
+    group_add:
+      - "${LOKI_WATCHER_UPDATER_GID:?updater socket group id is required}"
     depends_on:
-      init-permissions:
-        condition: service_completed_successfully
+      init-permissions: {condition: service_completed_successfully}
     read_only: true
-    tmpfs:
-      - /tmp:size=268435456,mode=1777
+    tmpfs: ["/tmp:size=268435456,mode=1777"]
     cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
+    security_opt: ["no-new-privileges:true"]
     logging:
       driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: {max-size: "10m", max-file: "3"}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()"]
       interval: 30s
@@ -86,33 +73,22 @@ services:
       start_period: 10s
 
   web:
-    image: ${LOKI_WATCHER_WEB_IMAGE:-watcher-web:local}
-    build:
-      context: .
-      dockerfile: web/Dockerfile
+    image: ${LOKI_WATCHER_WEB_IMAGE:?immutable web image digest is required}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${LOKI_WATCHER_WEB_PORT:-18081}:8080"
     depends_on:
-      api:
-        condition: service_healthy
+      api: {condition: service_healthy}
     read_only: true
-    tmpfs:
-      - /tmp:size=16777216,mode=1777
+    tmpfs: ["/tmp:size=16777216,mode=1777"]
     cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
+    security_opt: ["no-new-privileges:true"]
     logging:
       driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: {max-size: "10m", max-file: "3"}
 
   worker:
-    image: ${LOKI_WATCHER_WORKER_IMAGE:-watcher-worker:local}
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
+    image: ${LOKI_WATCHER_WORKER_IMAGE:?immutable worker image digest is required}
     restart: unless-stopped
     environment:
       LOKI_WATCHER_DB: /data/watcher.db
@@ -124,34 +100,25 @@ services:
       LOKI_WATCHER_AUDIT_MAX_ENTRIES: ${LOKI_WATCHER_AUDIT_MAX_ENTRIES:-10000}
       LOKI_WATCHER_AUDIT_RETENTION_DAYS: ${LOKI_WATCHER_AUDIT_RETENTION_DAYS:-30}
       LOKI_WATCHER_AUDIT_MAX_BYTES: ${LOKI_WATCHER_AUDIT_MAX_BYTES:-67108864}
-    volumes:
-      - watcher-data:/data
-    depends_on:
-      - api
+    volumes: ["watcher-data:/data"]
+    depends_on: ["api"]
     read_only: true
-    tmpfs:
-      - /tmp:size=33554432,mode=1777
+    tmpfs: ["/tmp:size=33554432,mode=1777"]
     cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
+    security_opt: ["no-new-privileges:true"]
     logging:
       driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
+      options: {max-size: "5m", max-file: "2"}
 
   backup:
-    image: ${LOKI_WATCHER_WORKER_IMAGE:-watcher-worker:local}
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
+    image: ${LOKI_WATCHER_WORKER_IMAGE:?immutable worker image digest is required}
     restart: unless-stopped
     command: ["python", "/app/backup.py"]
     environment:
       LOKI_WATCHER_DB: /data/watcher.db
+      LOKI_WATCHER_VERSION: ${LOKI_WATCHER_VERSION:?release version is required}
       LOKI_WATCHER_BACKUP_DIR: /backups
-      LOKI_WATCHER_VERSION: ${LOKI_WATCHER_VERSION:-0.1.0}
-      LOKI_WATCHER_BACKUP_ENCRYPTION_KEY: ${LOKI_WATCHER_BACKUP_ENCRYPTION_KEY:?LOKI_WATCHER_BACKUP_ENCRYPTION_KEY must be generated}
+      LOKI_WATCHER_BACKUP_ENCRYPTION_KEY: ${LOKI_WATCHER_BACKUP_ENCRYPTION_KEY:?backup recovery key is required}
       LOKI_WATCHER_MAX_BACKUP_BYTES: ${LOKI_WATCHER_MAX_BACKUP_BYTES:-134217728}
       LOKI_WATCHER_MAX_BACKUP_UNCOMPRESSED_BYTES: ${LOKI_WATCHER_MAX_BACKUP_UNCOMPRESSED_BYTES:-268435456}
       LOKI_WATCHER_MAX_BACKUP_MEMBER_BYTES: ${LOKI_WATCHER_MAX_BACKUP_MEMBER_BYTES:-268435456}
@@ -159,23 +126,16 @@ services:
       LOKI_WATCHER_BACKUP_RETENTION_DAYS: ${LOKI_WATCHER_BACKUP_RETENTION_DAYS:-30}
       LOKI_WATCHER_BACKUP_MAX_FILES: ${LOKI_WATCHER_BACKUP_MAX_FILES:-20}
       LOKI_WATCHER_BACKUP_MAX_TOTAL_BYTES: ${LOKI_WATCHER_BACKUP_MAX_TOTAL_BYTES:-2147483648}
-    volumes:
-      - watcher-data:/data
-      - watcher-backups:/backups
+    volumes: ["watcher-data:/data", "watcher-backups:/backups"]
     depends_on:
-      api:
-        condition: service_healthy
+      api: {condition: service_healthy}
     read_only: true
-    tmpfs:
-      - /tmp:size=268435456,mode=1777
+    tmpfs: ["/tmp:size=268435456,mode=1777"]
     cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
+    security_opt: ["no-new-privileges:true"]
     logging:
       driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
+      options: {max-size: "5m", max-file: "2"}
 
 volumes:
   watcher-data:

@@ -1,6 +1,12 @@
+limit_req_zone $binary_remote_addr zone=watcher_api:10m rate=30r/s;
+limit_req_zone $binary_remote_addr zone=watcher_assets:10m rate=3r/s;
+limit_req_zone $binary_remote_addr zone=watcher_subscriptions:10m rate=10r/s;
+limit_conn_zone $binary_remote_addr zone=watcher_connections:10m;
+
 server {
     listen 80;
     server_name ${NGINX_SERVER_NAME};
+    if ($host != ${NGINX_SERVER_NAME}) { return 444; }
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -16,6 +22,8 @@ server {
     listen 443 ssl;
     http2 on;
     server_name ${NGINX_SERVER_NAME};
+    if ($host != ${NGINX_SERVER_NAME}) { return 444; }
+    server_tokens off;
 
     resolver 127.0.0.11 valid=10s ipv6=off;
     set $api_upstream api:8080;
@@ -28,11 +36,22 @@ server {
     ssl_session_timeout 1d;
 
     client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
+    client_body_timeout 30s;
+    client_header_timeout 15s;
+    keepalive_timeout 30s;
+    send_timeout 60s;
+    limit_conn watcher_connections 40;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
 
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-Host $host;
 
@@ -45,15 +64,25 @@ server {
     }
 
     location /assets/ {
+        limit_req zone=watcher_assets burst=10 nodelay;
         proxy_pass http://$api_upstream;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
 
     location /api/ {
+        limit_req zone=watcher_api burst=60 nodelay;
         proxy_pass http://$api_upstream;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
+    }
+
+    location /sub/ {
+        access_log off;
+        limit_req zone=watcher_subscriptions burst=20 nodelay;
+        proxy_pass http://$api_upstream;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
     }
 
     location = / {

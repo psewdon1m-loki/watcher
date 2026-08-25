@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+INSTALL_DIR=${VPNENUS_WATCHER_INSTALL_DIR:-/opt/vpnenus-watcher}
+case "${1:-}" in
+  prepare|install|repair|status)
+    exec "$INSTALL_DIR/install.sh" "$@"
+    ;;
+  update)
+    shift
+    exec python3 /opt/vpnenus-updater/updater_client.py --service watcher update "$@"
+    ;;
+  update-check)
+    exec python3 /opt/vpnenus-updater/updater_client.py --service watcher check
+    ;;
+  update-job)
+    shift
+    exec python3 /opt/vpnenus-updater/updater_client.py --service watcher job "$@"
+    ;;
+  updater-self-update)
+    shift
+    exec python3 /opt/vpnenus-updater/updater_client.py --service watcher self-update "$@"
+    ;;
+  updater-self-update-job)
+    shift
+    exec python3 /opt/vpnenus-updater/updater_client.py --service watcher self-update-job "$@"
+    ;;
+  backup)
+    shift
+    exec python3 "$INSTALL_DIR/recovery_tool.py" --env "$INSTALL_DIR/.env" backup "$@"
+    ;;
+  restore)
+    shift
+    exec python3 "$INSTALL_DIR/recovery_tool.py" --env "$INSTALL_DIR/.env" restore "$@"
+    ;;
+  *)
+    printf '%s\n' "usage: vpn-enus-watcher prepare|install|repair|status|backup TARGET|restore SOURCE|update-check|update --version X.Y.Z|update-job REQUEST_ID|updater-self-update --release-version X.Y.Z|updater-self-update-job REQUEST_ID" >&2
+    exit 2
+    ;;
+esac

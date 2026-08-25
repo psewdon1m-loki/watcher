@@ -3,55 +3,76 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Loki Watcher</title>
-  <link rel="stylesheet" href="styles.css">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>Cake Proxy</title>
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
-  <section id="loginScreen" class="loginScreen">
-    <h1>LOKI WATCHER</h1>
-    <div class="loginPanel">
-      <input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="username">
-      <input id="password" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="password">
-      <button id="login" type="button">sign in</button>
-      <p id="loginStatus" class="statusLine"></p>
+  <section id="loginScreen" class="login-view">
+    <div class="login-panel">
+      <header class="login-header">
+        <h1 class="wordmark" aria-label="Cake Proxy">
+          <span aria-hidden="true">Cake</span><span aria-hidden="true">Proxy</span>
+        </h1>
+        <div id="availability" class="availability unavailable" role="status">
+          <span class="availability-spinner" aria-hidden="true"></span>
+          <span id="availabilityText">UNAVAILABLE</span>
+        </div>
+      </header>
+      <form id="loginForm" class="login-form" autocomplete="off">
+        <input id="username" aria-label="Login" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Login" data-1p-ignore data-lpignore="true" required autofocus>
+        <input id="password" aria-label="Password" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Password" data-1p-ignore data-lpignore="true" required>
+        <button id="loginButton" class="accent-action" type="submit" disabled>Sign in</button>
+        <p id="loginStatus" class="inline-error" role="alert"></p>
+      </form>
     </div>
   </section>
 
-  <main id="appScreen" class="shell hidden">
-    <header class="top">
-      <h1>LOKI WATCHER</h1>
-    </header>
-
-    <section class="sectionTop">
-      <h2>Dashboard</h2>
-      <div class="actions">
-        <button id="requestData" type="button">request data</button>
-        <button id="downloadBackup" type="button">create backup</button>
-        <label class="uploadButton">
-          restore backup
-          <input id="uploadBackup" type="file" accept=".zip,application/zip">
-        </label>
-        <button id="refresh" type="button">refresh</button>
+  <div id="appScreen" class="app hidden">
+    <div id="sidebarTrigger" class="sidebar-trigger" aria-hidden="true"></div>
+    <aside id="sidebar" class="sidebar" aria-label="Primary navigation">
+      <div class="sidebar-brand" aria-label="Cake Proxy">
+        <span>Cake</span><span>Proxy</span>
       </div>
-    </section>
-    <p id="status" class="statusLine"></p>
-    <section id="dashboard" class="summary"></section>
+      <nav id="primaryNav" class="primary-nav">
+        <button class="nav-item active" type="button" draggable="true" data-view="dashboard"><span>Dashboard</span><span class="nav-position">01</span></button>
+        <button class="nav-item" type="button" draggable="true" data-view="connections"><span>Connections</span><span class="nav-position">02</span></button>
+        <button class="nav-item" type="button" draggable="true" data-view="clients"><span>Clients</span><span class="nav-position">03</span></button>
+        <button class="nav-item" type="button" draggable="true" data-view="analytics"><span>Analytics</span><span class="nav-position">04</span></button>
+        <button class="nav-item" type="button" draggable="true" data-view="register"><span>Register</span><span class="nav-position">05</span></button>
+        <button class="nav-item" type="button" draggable="true" data-view="settings"><span>Settings</span><span class="nav-position">06</span></button>
+      </nav>
+      <div class="operator-nav">
+        <button id="documentationButton" type="button">Documentation</button>
+        <button id="logoutButton" class="logout-button" type="button">Logout</button>
+      </div>
+    </aside>
 
-    <section class="sectionTop second">
-      <h2>Updates</h2>
-    </section>
-    <section id="updates" class="targetPanel"></section>
+    <main id="mainContent" class="main-content">
+      <div class="page-header">
+        <button id="mobileMenuButton" class="mobile-menu" type="button" aria-label="Open menu">Menu</button>
+        <h1 id="pageTitle">DASHBOARD</h1>
+        <button id="pageRefresh" class="compact-action" type="button">Refresh</button>
+      </div>
+      <section id="viewRoot" class="view-root" aria-live="polite"></section>
+    </main>
+  </div>
 
-    <section class="sectionTop second">
-      <h2>Clients</h2>
-    </section>
-    <section id="clients" class="clients"></section>
-    <section id="detail" class="detail hidden"></section>
+  <div id="noticeStack" class="notice-stack" aria-live="polite"></div>
 
-    <div id="contextMenu" class="contextMenu hidden">
-      <button id="deleteClient" type="button">delete client</button>
-    </div>
-  </main>
-  <script src="app.js"></script>
+  <div id="overlay" class="overlay hidden" role="presentation">
+    <section id="dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+      <header id="dialogHeader" class="dialog-header">
+        <h2 id="dialogTitle"></h2>
+        <button id="dialogClose" class="icon-button" type="button" aria-label="Close dialog" title="Close">×</button>
+      </header>
+      <div id="dialogBody" class="dialog-body"></div>
+    </section>
+  </div>
+
+  <input id="backupFileInput" class="hidden" type="file" accept=".zip,application/zip" tabindex="-1" aria-hidden="true">
+  <script src="app.js?v=7"></script>
 </body>
 </html>

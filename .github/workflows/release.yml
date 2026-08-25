@@ -1,0 +1,165 @@
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Validate semantic tag
+        id: version
+        shell: bash
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]
+          echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          git rev-parse "$GITHUB_REF_NAME^{commit}" >/dev/null
+      - name: Install pinned dependencies and test
+        run: |
+          pip install --require-hashes --only-binary=:all: -r requirements.txt
+          bash -n deploy/bootstrap.sh deploy/install.sh deploy/watcherctl
+          python -m py_compile api/app.py common/backup_contract.py common/database_lock.py worker/worker.py worker/backup.py deploy/validate_env.py deploy/recovery_tool.py deploy/updater_common.py deploy/local_updater.py deploy/updater_daemon.py deploy/updater_client.py deploy/updater_self_update.py scripts/build_release.py scripts/verify_repository.py
+          node --check web/static/app.js
+          python scripts/verify_repository.py
+          python -m unittest discover -s api/tests -v
+          (cd worker && PYTHONPATH=.. python -m unittest test_worker.py -v)
+          python -m unittest discover -s deploy/tests -v
+      - name: Audit Python dependency advisories
+        uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
+        with:
+          inputs: requirements.txt
+          require-hashes: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish API once
+        id: api
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: api/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-api:candidate-${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+      - name: Build and publish web once
+        id: web
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: web/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-web:candidate-${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+      - name: Build and publish worker once
+        id: worker
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: worker/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-worker:candidate-${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+      - name: Scan exact API image layers
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-api@${{ steps.api.outputs.digest }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          hide-progress: true
+      - name: Scan exact web image layers
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-web@${{ steps.web.outputs.digest }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          hide-progress: true
+          skip-setup-trivy: true
+      - name: Scan exact worker image layers
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-worker@${{ steps.worker.outputs.digest }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          hide-progress: true
+          skip-setup-trivy: true
+      - name: Smoke exact published digests
+        env:
+          LOKI_WATCHER_VERSION: ${{ steps.version.outputs.value }}
+          LOKI_WATCHER_API_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-api@${{ steps.api.outputs.digest }}
+          LOKI_WATCHER_WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-web@${{ steps.web.outputs.digest }}
+          LOKI_WATCHER_WORKER_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-worker@${{ steps.worker.outputs.digest }}
+          LOKI_WATCHER_DASHBOARD_USERNAME: release-smoke
+          LOKI_WATCHER_DASHBOARD_PASSWORD: Release-Smoke-Password-12345!
+          LOKI_WATCHER_BACKUP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          LOKI_WATCHER_LOCAL_CONTROL_TOKEN: release-control-token-abcdefghijklmnopqrstuvwxyz
+          LOKI_WATCHER_UPDATER_GID: "999"
+          LOKI_WATCHER_PUBLIC_SNI: watcher.example.test
+        run: |
+          docker compose -f deploy/docker-compose.release.yml up -d --no-build
+          for attempt in $(seq 1 60); do curl --fail --silent http://127.0.0.1:18080/health && break; sleep 2; done
+          curl --fail --silent http://127.0.0.1:18080/health
+          curl --fail --silent http://127.0.0.1:18081/ >/dev/null
+      - name: Bounded smoke diagnostics
+        if: failure()
+        run: docker compose -f deploy/docker-compose.release.yml logs --no-color --tail 100
+      - name: Promote the exact tested digests to semantic tags
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          API_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-api@${{ steps.api.outputs.digest }}
+          WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-web@${{ steps.web.outputs.digest }}
+          WORKER_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-worker@${{ steps.worker.outputs.digest }}
+        run: |
+          docker buildx imagetools create --tag "ghcr.io/${GITHUB_REPOSITORY_OWNER}/vpn-enus-watcher-api:${VERSION}" "$API_IMAGE"
+          docker buildx imagetools create --tag "ghcr.io/${GITHUB_REPOSITORY_OWNER}/vpn-enus-watcher-web:${VERSION}" "$WEB_IMAGE"
+          docker buildx imagetools create --tag "ghcr.io/${GITHUB_REPOSITORY_OWNER}/vpn-enus-watcher-worker:${VERSION}" "$WORKER_IMAGE"
+      - name: Build checksummed release contract
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          API_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-api@${{ steps.api.outputs.digest }}
+          WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-web@${{ steps.web.outputs.digest }}
+          WORKER_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-worker@${{ steps.worker.outputs.digest }}
+        run: |
+          python scripts/build_release.py --version "$VERSION" --api-image "$API_IMAGE" --web-image "$WEB_IMAGE" --worker-image "$WORKER_IMAGE" --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}" --output dist
+      - name: Scan final release archive and manifest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: dist
+          scanners: secret,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          hide-progress: true
+          skip-setup-trivy: true
+      - name: Publish under the immutable source tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --title "VPNЭНУС Watcher ${{ steps.version.outputs.value }}" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+      - name: Stop smoke stack
+        if: always()
+        run: docker compose -f deploy/docker-compose.release.yml down
