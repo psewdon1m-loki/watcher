@@ -260,6 +260,8 @@ class LinuxUpdaterTests(unittest.TestCase):
                 updater_self_update.install_staged(staged)
                 with open(os.path.join(updater_root, "updater_daemon.py"), "rb") as source:
                     self.assertEqual(b"new", source.read())
+                with open(unit_path, "rb") as source:
+                    self.assertEqual(b"new-unit", source.read())
                 updater_self_update.restore_previous(previous)
                 with open(os.path.join(updater_root, "updater_daemon.py"), "rb") as source:
                     self.assertEqual(b"old", source.read())

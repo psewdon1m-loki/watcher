@@ -94,22 +94,32 @@ def wait_daemon(timeout: int = 20) -> bool:
     return False
 
 
+def replace_unit_file(source: str) -> None:
+    # The transient self-update sandbox grants write access to the exact unit
+    # path, not its otherwise read-only parent directory. Writing a sibling
+    # temporary file would therefore fail before systemd can reload it.
+    with open(source, "rb") as input_file, open(UNIT_PATH, "wb") as output_file:
+        shutil.copyfileobj(input_file, output_file)
+        output_file.flush()
+        os.fsync(output_file.fileno())
+    os.chmod(UNIT_PATH, 0o644)
+
+
 def install_staged(staged: str) -> None:
     for name in UPDATER_FILES:
         source = os.path.join(staged, name)
         if not os.path.isfile(source):
             raise SelfUpdateError(f"self-update bundle is missing {name}")
+    unit_source = os.path.join(staged, "vpnenus-updater.service")
+    if not os.path.isfile(unit_source):
+        raise SelfUpdateError("self-update bundle is missing the systemd unit")
+    for name in UPDATER_FILES:
+        source = os.path.join(staged, name)
         pending = os.path.join(UPDATER_ROOT, f".{name}.{uuid.uuid4().hex}.tmp")
         shutil.copy2(source, pending)
         os.chmod(pending, 0o755)
         os.replace(pending, os.path.join(UPDATER_ROOT, name))
-    unit_source = os.path.join(staged, "vpnenus-updater.service")
-    if not os.path.isfile(unit_source):
-        raise SelfUpdateError("self-update bundle is missing the systemd unit")
-    unit_pending = f"{UNIT_PATH}.{uuid.uuid4().hex}.tmp"
-    shutil.copy2(unit_source, unit_pending)
-    os.chmod(unit_pending, 0o644)
-    os.replace(unit_pending, UNIT_PATH)
+    replace_unit_file(unit_source)
 
 
 def restore_previous(previous: str) -> None:
@@ -122,10 +132,7 @@ def restore_previous(previous: str) -> None:
             os.replace(pending, os.path.join(UPDATER_ROOT, name))
     unit_source = os.path.join(previous, "vpnenus-updater.service")
     if os.path.isfile(unit_source):
-        pending = f"{UNIT_PATH}.{uuid.uuid4().hex}.rollback"
-        shutil.copy2(unit_source, pending)
-        os.chmod(pending, 0o644)
-        os.replace(pending, UNIT_PATH)
+        replace_unit_file(unit_source)
 
 
 def prune_self_update_state(jobs_dir: str, backups_dir: str) -> None:
@@ -202,7 +209,7 @@ def main() -> int:
         mutation_lock.close()
         return 0
     except Exception as exc:
-        message = str(exc) if isinstance(exc, (SelfUpdateError, UpdateError, UpdaterProtocolError)) else type(exc).__name__
+        message = str(exc) if isinstance(exc, (OSError, SelfUpdateError, UpdateError, UpdaterProtocolError)) else type(exc).__name__
         if not mutation_started:
             job.transition("FAILED", f"Updater self-update failed before mutation: {message}")
             prune_self_update_state(jobs_dir, backups_dir)
