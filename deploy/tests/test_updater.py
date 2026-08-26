@@ -214,6 +214,32 @@ class LinuxUpdaterTests(unittest.TestCase):
             with self.assertRaises(local_updater.UpdateError):
                 local_updater.safe_extract_bundle(bad_path, os.path.join(directory, "bad"))
 
+    def test_environment_replacement_is_staged_inside_install_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            staging = os.path.join(directory, "staging")
+            install = os.path.join(directory, "install")
+            os.makedirs(staging)
+            os.makedirs(install)
+            staged_path = os.path.join(staging, ".env")
+            target_path = os.path.join(install, ".env")
+            with open(staged_path, "wb") as target:
+                target.write(b"LOKI_WATCHER_VERSION=0.0.13\n")
+            with open(target_path, "wb") as target:
+                target.write(b"LOKI_WATCHER_VERSION=0.0.8\n")
+            real_replace = os.replace
+            replace_calls = []
+
+            def tracked_replace(source, target):
+                replace_calls.append((source, target))
+                return real_replace(source, target)
+
+            with mock.patch.object(local_updater.os, "replace", side_effect=tracked_replace):
+                local_updater.replace_env_file(staged_path, target_path)
+            self.assertEqual(1, len(replace_calls))
+            self.assertEqual(os.path.dirname(target_path), os.path.dirname(replace_calls[0][0]))
+            with open(target_path, "rb") as source:
+                self.assertEqual(b"LOKI_WATCHER_VERSION=0.0.13\n", source.read())
+
     def test_restart_reconciliation_never_leaves_ambiguous_jobs(self):
         with tempfile.TemporaryDirectory() as state_root:
             app_jobs = os.path.join(state_root, "services", "watcher", "jobs")

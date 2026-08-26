@@ -321,6 +321,25 @@ def write_env(source_path: str, target_path: str, replacements: dict[str, str]) 
     os.chmod(target_path, 0o600)
 
 
+def replace_env_file(staged_path: str, target_path: str) -> None:
+    # os.replace() cannot move the staged file from /tmp across the protected
+    # install-dir mount. Copy into the target directory first, then atomically
+    # replace the live environment file within the same filesystem.
+    pending = os.path.join(os.path.dirname(target_path), f"..env.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(staged_path, "rb") as source, open(pending, "xb") as target:
+            shutil.copyfileobj(source, target)
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(pending, 0o600)
+        os.replace(pending, target_path)
+    finally:
+        try:
+            os.remove(pending)
+        except FileNotFoundError:
+            pass
+
+
 def safe_extract_bundle(bundle_path: str, target: str) -> None:
     allowed = {
         "docker-compose.yml", ".env.template", "install.sh", "watcherctl", "recovery_tool.py", "validate_env.py",
@@ -522,7 +541,7 @@ def main() -> int:
                         shutil.copy2(source, pending)
                         os.chmod(pending, 0o700 if name in {"install.sh", "watcherctl", "recovery_tool.py", "local_updater.py", "updater_daemon.py", "updater_client.py", "updater_common.py", "updater_self_update.py"} else 0o600)
                         os.replace(pending, os.path.join(install_dir, name))
-                os.replace(staged_env, env_path)
+                replace_env_file(staged_env, env_path)
                 values = validate(env_path)
                 run(compose_command(compose_path, env_path, "up", "-d", "--no-build"), timeout=300)
                 job.transition("HEALTH_CHECK", "Polling loopback health after service replacement.")
@@ -530,7 +549,7 @@ def main() -> int:
                     raise UpdateError("new release failed loopback health")
             job.transition("COMPLETED", "Update completed and health passed.", installedVersion=args.version, installedImages=manifest["images"])
         except Exception as exc:
-            message = str(exc) if isinstance(exc, UpdateError) else type(exc).__name__
+            message = str(exc) if isinstance(exc, (OSError, UpdateError)) else type(exc).__name__
             if not mutation_started:
                 job.transition("FAILED", f"Update failed before runtime mutation: {message}")
                 return 1
