@@ -122,9 +122,25 @@ jobs:
           docker compose -f deploy/docker-compose.release.yml up -d --no-build
           for attempt in $(seq 1 60); do curl --fail --silent http://127.0.0.1:18080/health && break; sleep 2; done
           curl --fail --silent http://127.0.0.1:18080/health
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18081/ >/dev/null; then break; fi
+            sleep 1
+          done
           curl --fail --silent http://127.0.0.1:18081/ >/dev/null
       - name: Bounded smoke diagnostics
         if: failure()
+        continue-on-error: true
+        env:
+          LOKI_WATCHER_VERSION: ${{ steps.version.outputs.value }}
+          LOKI_WATCHER_API_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-api@${{ steps.api.outputs.digest }}
+          LOKI_WATCHER_WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-web@${{ steps.web.outputs.digest }}
+          LOKI_WATCHER_WORKER_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-worker@${{ steps.worker.outputs.digest }}
+          LOKI_WATCHER_DASHBOARD_USERNAME: release-smoke
+          LOKI_WATCHER_DASHBOARD_PASSWORD: Release-Smoke-Password-12345!
+          LOKI_WATCHER_BACKUP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          LOKI_WATCHER_LOCAL_CONTROL_TOKEN: release-control-token-abcdefghijklmnopqrstuvwxyz
+          LOKI_WATCHER_UPDATER_GID: "999"
+          LOKI_WATCHER_PUBLIC_SNI: watcher.example.test
         run: docker compose -f deploy/docker-compose.release.yml logs --no-color --tail 100
       - name: Promote the exact tested digests to semantic tags
         env:
@@ -162,4 +178,16 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
       - name: Stop smoke stack
         if: always()
-        run: docker compose -f deploy/docker-compose.release.yml down
+        continue-on-error: true
+        env:
+          LOKI_WATCHER_VERSION: ${{ steps.version.outputs.value }}
+          LOKI_WATCHER_API_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-api@${{ steps.api.outputs.digest }}
+          LOKI_WATCHER_WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-web@${{ steps.web.outputs.digest }}
+          LOKI_WATCHER_WORKER_IMAGE: ghcr.io/${{ github.repository_owner }}/vpn-enus-watcher-worker@${{ steps.worker.outputs.digest }}
+          LOKI_WATCHER_DASHBOARD_USERNAME: release-smoke
+          LOKI_WATCHER_DASHBOARD_PASSWORD: Release-Smoke-Password-12345!
+          LOKI_WATCHER_BACKUP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          LOKI_WATCHER_LOCAL_CONTROL_TOKEN: release-control-token-abcdefghijklmnopqrstuvwxyz
+          LOKI_WATCHER_UPDATER_GID: "999"
+          LOKI_WATCHER_PUBLIC_SNI: watcher.example.test
+        run: docker compose -f deploy/docker-compose.release.yml down --remove-orphans
