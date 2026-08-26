@@ -144,14 +144,12 @@ def fetch_json(url: str, maximum: int) -> dict[str, Any]:
             pass
 
 
-def resolve_release(repository: str, version: str, *, enforce_minimum_updater: bool = True) -> dict[str, Any]:
-    release = fetch_json(f"https://api.github.com/repos/{repository}/releases/tags/v{version}", MAX_MANIFEST_BYTES)
-    if release.get("draft") or release.get("prerelease") or str(release.get("tag_name")) != f"v{version}":
-        raise UpdateError("release is missing, draft, prerelease or identity-mismatched")
-    asset = next((item for item in release.get("assets", []) if item.get("name") == MANIFEST_ASSET), None)
-    if not isinstance(asset, dict):
-        raise UpdateError("release manifest asset is missing")
-    manifest = fetch_json(str(asset.get("browser_download_url") or ""), MAX_MANIFEST_BYTES)
+def validate_release_manifest(
+    manifest: dict[str, Any],
+    version: str,
+    *,
+    enforce_minimum_updater: bool = True,
+) -> dict[str, Any]:
     if (
         manifest.get("schemaVersion") != 1
         or manifest.get("componentRole") != "watcher-control-plane"
@@ -172,6 +170,33 @@ def resolve_release(repository: str, version: str, *, enforce_minimum_updater: b
     if not isinstance(bundle.get("bytes"), int) or bundle["bytes"] <= 0 or bundle["bytes"] > MAX_BUNDLE_BYTES:
         raise UpdateError("bundle size is invalid")
     return manifest
+
+
+def resolve_release(repository: str, version: str, *, enforce_minimum_updater: bool = True) -> dict[str, Any]:
+    release = fetch_json(f"https://api.github.com/repos/{repository}/releases/tags/v{version}", MAX_MANIFEST_BYTES)
+    if release.get("draft") or release.get("prerelease") or str(release.get("tag_name")) != f"v{version}":
+        raise UpdateError("release is missing, draft, prerelease or identity-mismatched")
+    asset = next((item for item in release.get("assets", []) if item.get("name") == MANIFEST_ASSET), None)
+    if not isinstance(asset, dict):
+        raise UpdateError("release manifest asset is missing")
+    manifest = fetch_json(str(asset.get("browser_download_url") or ""), MAX_MANIFEST_BYTES)
+    return validate_release_manifest(
+        manifest,
+        version,
+        enforce_minimum_updater=enforce_minimum_updater,
+    )
+
+
+def resolve_latest_release(repository: str) -> dict[str, Any]:
+    manifest = fetch_json(
+        f"https://github.com/{repository}/releases/latest/download/{MANIFEST_ASSET}",
+        MAX_MANIFEST_BYTES,
+    )
+    version = str(manifest.get("version") or "")
+    version_tuple(version)
+    # Discovery must still report a release that requires an updater
+    # self-update. Enforcement belongs to the exact-version install path.
+    return validate_release_manifest(manifest, version, enforce_minimum_updater=False)
 
 
 def api_fetch_policy(profile: dict[str, Any]) -> dict[str, Any]:

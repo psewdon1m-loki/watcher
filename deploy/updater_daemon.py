@@ -14,14 +14,11 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from local_updater import MAX_MANIFEST_BYTES, load_release_policy, reconcile_jobs, resolve_release
+from local_updater import UpdateError, load_release_policy, reconcile_jobs, resolve_latest_release
 from updater_common import (
     DEFAULT_PROFILE_DIR,
     DEFAULT_SOCKET_PATH,
@@ -40,7 +37,6 @@ from validate_env import parse_env
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_HEADER_VALUE_CHARS = 4096
-GITHUB_RELEASE_HOST = "api.github.com"
 _launch_lock = threading.Lock()
 
 
@@ -113,52 +109,14 @@ def installed_identity(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def fetch_release_candidates(repository: str) -> list[dict[str, Any]]:
-    url = f"https://{GITHUB_RELEASE_HOST}/repos/{repository}/releases?per_page=100"
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": f"vpnenus-updater/{UPDATER_VERSION}"})
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            raw = response.read(MAX_MANIFEST_BYTES + 1)
-            final = response.geturl()
-        final_url = urllib.parse.urlparse(final)
-        if (
-            len(raw) > MAX_MANIFEST_BYTES
-            or final_url.scheme != "https"
-            or final_url.hostname != GITHUB_RELEASE_HOST
-            or final_url.port not in {None, 443}
-            or final_url.username
-            or final_url.password
-        ):
-            raise DaemonError(HTTPStatus.BAD_GATEWAY, "release_discovery_failed", "Release discovery response was rejected.")
-        value = json.loads(raw.decode("utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, urllib.error.URLError) as exc:
-        raise DaemonError(HTTPStatus.BAD_GATEWAY, "release_discovery_failed", "Release discovery failed.") from exc
-    if not isinstance(value, list):
-        raise DaemonError(HTTPStatus.BAD_GATEWAY, "release_discovery_failed", "Release discovery response is invalid.")
-    return [item for item in value if isinstance(item, dict)]
-
-
 def discover_latest(repository: str) -> dict[str, Any]:
-    candidates = []
-    for release in fetch_release_candidates(repository):
-        tag = str(release.get("tag_name") or "")
-        if release.get("draft") or release.get("prerelease") or not tag.startswith("v"):
-            continue
-        try:
-            semantic = version_tuple(tag[1:])
-        except UpdaterProtocolError:
-            continue
-        if any(asset.get("name") == "vpn-enus-watcher-release.json" for asset in release.get("assets", []) if isinstance(asset, dict)):
-            candidates.append((semantic, tag[1:], release))
-    if not candidates:
-        raise DaemonError(HTTPStatus.NOT_FOUND, "release_not_found", "No stable release-contract release was found.")
-    _, version, release = sorted(candidates, key=lambda item: item[0])[-1]
-    manifest = resolve_release(repository, version)
+    manifest = resolve_latest_release(repository)
+    version = str(manifest["version"])
     return {
         "version": version,
         "tag": f"v{version}",
-        "publishedAt": release.get("published_at"),
-        "releaseNotesUrl": manifest.get("releaseNotesUrl") or release.get("html_url"),
+        "publishedAt": None,
+        "releaseNotesUrl": manifest.get("releaseNotesUrl") or f"https://github.com/{repository}/releases/tag/v{version}",
         "images": manifest.get("images"),
         "minimumUpdaterVersion": manifest.get("minimumUpdaterVersion"),
     }
@@ -297,8 +255,8 @@ class Handler(BaseHTTPRequestHandler):
             raise DaemonError(HTTPStatus.NOT_FOUND, "not_found", "Updater route was not found.")
         except DaemonError as exc:
             self.reject(exc)
-        except (UpdaterProtocolError, ValueError) as exc:
-            self.reject(DaemonError(HTTPStatus.BAD_GATEWAY, "updater_validation_failed", str(exc)))
+        except (UpdaterProtocolError, UpdateError, ValueError) as exc:
+            self.reject(DaemonError(HTTPStatus.BAD_GATEWAY, "release_discovery_failed", str(exc)))
         except Exception as exc:
             self.reject(DaemonError(HTTPStatus.INTERNAL_SERVER_ERROR, "updater_internal_error", type(exc).__name__))
 

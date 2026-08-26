@@ -170,6 +170,31 @@ class LinuxUpdaterTests(unittest.TestCase):
             with self.assertRaises(local_updater.UpdateError):
                 local_updater.resolve_release("owner/watcher", version)
 
+    def test_latest_release_discovery_uses_direct_stable_asset(self):
+        manifest = {
+            "schemaVersion": 1,
+            "componentRole": "watcher-control-plane",
+            "version": "1.2.3",
+            "channel": "stable",
+            "databaseSchemaGeneration": 3,
+            "minimumUpdaterVersion": "9.0.0",
+            "images": {
+                role: f"ghcr.io/owner/watcher-{role}@sha256:" + (str(index) * 64)
+                for index, role in enumerate(("api", "web", "worker"), start=1)
+            },
+            "bundle": {
+                "url": "https://github.com/owner/watcher/releases/download/v1.2.3/bundle.zip",
+                "sha256": "a" * 64,
+                "bytes": 1024,
+            },
+            "releaseNotesUrl": "https://github.com/owner/watcher/releases/tag/v1.2.3",
+        }
+        with mock.patch.object(local_updater, "fetch_json", return_value=manifest) as fetch:
+            latest = updater_daemon.discover_latest("owner/watcher")
+        self.assertEqual("1.2.3", latest["version"])
+        self.assertEqual("9.0.0", latest["minimumUpdaterVersion"])
+        self.assertIn("/releases/latest/download/", fetch.call_args.args[0])
+
     def test_bundle_extraction_requires_the_exact_member_contract(self):
         allowed = {
             "docker-compose.yml", ".env.template", "install.sh", "watcherctl", "recovery_tool.py", "validate_env.py",

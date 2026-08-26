@@ -1283,6 +1283,61 @@ class ApiTests(unittest.TestCase):
             app.pasarguard_request = old_request
             app.fetch_subscription = old_fetch
 
+    def test_client_initialization_returns_existing_direct_connection_without_pasarguard(self):
+        client_id = "direct-managed-client"
+        status, enrolled = self.signed_request(
+            "POST",
+            "/api/v1/enroll",
+            {
+                "clientId": client_id,
+                "displayId": "DIRECT-MANAGED-CLIENT",
+                "clientSecret": secret(),
+                "device": {"deviceType": "desktop-windows"},
+            },
+            client_id,
+        )
+        self.assertEqual(200, status, enrolled)
+
+        connection_id = "client-existing-direct"
+        status, created = self.request(
+            "POST",
+            "/api/v1/connections",
+            {
+                "id": connection_id,
+                "status": "active",
+                "configurations": ["vless://direct@node.example:443?security=reality#direct"],
+            },
+        )
+        self.assertEqual(201, status, created)
+        stable_url = created["connection"]["public_subscription_url"]
+        with app.connect(app.DB_PATH) as db:
+            db.execute(
+                "UPDATE clients SET connection_id = ? WHERE client_id = ?",
+                (connection_id, client_id),
+            )
+
+        old_provision = app.provision_pasarguard_connection
+
+        def unexpected_provision(*args, **kwargs):
+            self.fail("A usable direct connection must not trigger PasarGuard provisioning.")
+
+        app.provision_pasarguard_connection = unexpected_provision
+        try:
+            status, initialized = self.signed_request(
+                "POST",
+                "/api/v1/client/connections/initialize",
+                {"clientId": client_id, "displayId": "DIRECT-MANAGED-CLIENT"},
+                client_id,
+            )
+        finally:
+            app.provision_pasarguard_connection = old_provision
+
+        self.assertEqual(200, status, initialized)
+        self.assertFalse(initialized["created"])
+        self.assertEqual(connection_id, initialized["connectionId"])
+        self.assertEqual(stable_url, initialized["subscriptionUrl"])
+        self.assertEqual(1, initialized["count"])
+
     def test_pasarguard_template_affixes_are_rejected_before_user_creation(self):
         old_request = app.pasarguard_request
         calls = []
@@ -1393,18 +1448,35 @@ class ApiTests(unittest.TestCase):
             app.updater_socket_request = old_bridge
             app.discover_server_release_without_updater = old_discovery
 
+    def test_server_release_check_falls_back_when_daemon_check_fails(self):
+        old_bridge = app.updater_socket_request
+        old_discovery = app.discover_server_release_without_updater
+
+        try:
+            app.updater_socket_request = lambda *args, **kwargs: (
+                500,
+                {"error": "updater_internal_error", "message": "UpdateError"},
+            )
+            app.discover_server_release_without_updater = lambda: {
+                "serviceId": "watcher",
+                "installed": {"version": "1.0.0", "images": {}},
+                "availableRelease": {"version": "1.0.0"},
+                "updateAvailable": False,
+                "policy": {"source": "live-register", "repository": "owner/watcher"},
+                "informationalOnly": True,
+            }
+            status, body = self.request("GET", "/api/v1/server-updates/check")
+            self.assertEqual(200, status, body)
+            self.assertTrue(body["informationalOnly"])
+            self.assertEqual("updater_internal_error", body["daemonWarning"]["error"])
+        finally:
+            app.updater_socket_request = old_bridge
+            app.discover_server_release_without_updater = old_discovery
+
     def test_informational_server_discovery_validates_release_contract(self):
         old_policy = app.updater_policy_document
         old_github = app.github_json_bounded
         old_version = app.WATCHER_VERSION
-        release = {
-            "tag_name": "v1.2.0",
-            "published_at": "2026-08-08T00:00:00Z",
-            "html_url": "https://github.com/owner/watcher/releases/tag/v1.2.0",
-            "draft": False,
-            "prerelease": False,
-            "assets": [{"name": app.SERVER_RELEASE_MANIFEST_ASSET, "browser_download_url": "https://github.com/owner/watcher/manifest.json"}],
-        }
         manifest = {
             "schemaVersion": 1,
             "databaseSchemaGeneration": app.DATABASE_SCHEMA_GENERATION,
@@ -1423,10 +1495,18 @@ class ApiTests(unittest.TestCase):
                 "revision": "revision-1",
                 "repositories": {"server": "owner/watcher", "updater": "owner/watcher"},
             }
-            app.github_json_bounded = lambda url, **kwargs: [release] if "?per_page=" in url else manifest
+            requested_urls = []
+
+            def fake_github(url, **kwargs):
+                requested_urls.append(url)
+                return manifest
+
+            app.github_json_bounded = fake_github
             result = app.discover_server_release_without_updater()
             self.assertTrue(result["updateAvailable"])
             self.assertEqual("owner/watcher", result["policy"]["repository"])
+            self.assertEqual(1, len(requested_urls))
+            self.assertIn("/releases/latest/download/", requested_urls[0])
 
             manifest["images"]["api"] = "ghcr.io/owner/watcher-api:latest"
             with self.assertRaises(app.UpdaterBridgeError):

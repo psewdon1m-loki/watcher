@@ -901,46 +901,18 @@ def github_json_bounded(url: str, *, asset_hosts: set[str]) -> Any:
 def discover_server_release_without_updater() -> dict[str, Any]:
     policy = updater_policy_document()
     repository = policy["repositories"]["server"]
-    releases = github_json_bounded(
-        f"https://api.github.com/repos/{repository}/releases?per_page=100",
-        asset_hosts={"api.github.com"},
-    )
-    if not isinstance(releases, list):
-        raise UpdaterBridgeError(HTTPStatus.BAD_GATEWAY, "release_discovery_failed", "Server release list is invalid.")
-    candidates: list[tuple[tuple[int, int, int], str, dict[str, Any], dict[str, Any]]] = []
-    for release in releases:
-        if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
-            continue
-        tag = str(release.get("tag_name") or "")
-        if not tag.startswith("v"):
-            continue
-        match = SERVER_RELEASE_VERSION_RE.fullmatch(tag[1:])
-        if not match:
-            continue
-        asset = next(
-            (
-                item for item in release.get("assets", [])
-                if isinstance(item, dict) and item.get("name") == SERVER_RELEASE_MANIFEST_ASSET
-            ),
-            None,
-        )
-        if asset:
-            candidates.append((tuple(map(int, match.groups())), tag[1:], release, asset))
-    if not candidates:
-        raise UpdaterBridgeError(HTTPStatus.NOT_FOUND, "release_not_found", "No stable Watcher server release was found.")
-    _, version, release, asset = sorted(candidates, key=lambda item: item[0])[-1]
-    manifest_url = str(asset.get("browser_download_url") or "")
     manifest = github_json_bounded(
-        manifest_url,
+        f"https://github.com/{repository}/releases/latest/download/{SERVER_RELEASE_MANIFEST_ASSET}",
         asset_hosts={"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"},
     )
+    version = str(manifest.get("version") or "") if isinstance(manifest, dict) else ""
     images = manifest.get("images") if isinstance(manifest, dict) and isinstance(manifest.get("images"), dict) else {}
     if (
         not isinstance(manifest, dict)
         or manifest.get("schemaVersion") != 1
         or manifest.get("databaseSchemaGeneration") != DATABASE_SCHEMA_GENERATION
         or manifest.get("componentRole") != "watcher-control-plane"
-        or manifest.get("version") != version
+        or not SERVER_RELEASE_VERSION_RE.fullmatch(version)
         or manifest.get("channel") != "stable"
         or any(not SERVER_RELEASE_IMAGE_RE.fullmatch(str(images.get(role) or "")) for role in ("api", "web", "worker"))
     ):
@@ -952,8 +924,8 @@ def discover_server_release_without_updater() -> dict[str, Any]:
         "availableRelease": {
             "version": version,
             "tag": f"v{version}",
-            "publishedAt": release.get("published_at"),
-            "releaseNotesUrl": manifest.get("releaseNotesUrl") or release.get("html_url"),
+            "publishedAt": None,
+            "releaseNotesUrl": f"https://github.com/{repository}/releases/tag/v{version}",
             "images": images,
             "minimumUpdaterVersion": manifest.get("minimumUpdaterVersion"),
         },
@@ -3957,11 +3929,10 @@ class WatcherHandler(BaseHTTPRequestHandler):
 
             try:
                 current = load_issued_connection(connection_id)
-                pasar_source = next(
-                    (source for source in current.get("sources", []) if source.get("provider") == "pasarguard"),
-                    None,
-                )
-                if not pasar_source or not pasar_source.get("external_user_id") or not current.get("configurations"):
+                # A connection can be fully managed by Watcher with direct VLESS
+                # sources. PasarGuard is only a bootstrap provider for an empty
+                # allocation; it must not block an already usable connection.
+                if not current.get("configurations"):
                     current = provision_pasarguard_connection(connection_id, f"client:{client_id}")
             except PasarGuardError as exc:
                 json_response(self, exc.status, {"error": exc.code, "message": exc.message})
@@ -4238,6 +4209,21 @@ class WatcherHandler(BaseHTTPRequestHandler):
                     json_response(self, discovery_error.status, {"error": discovery_error.code, "message": discovery_error.message})
                 return
             json_response(self, exc.status, {"error": exc.code, "message": exc.message})
+            return
+        if path == "/api/v1/server-updates/check" and status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            try:
+                fallback = discover_server_release_without_updater()
+                fallback["daemonWarning"] = {
+                    "status": status,
+                    "error": str(response.get("error") or "updater_release_check_failed"),
+                }
+                json_response(self, HTTPStatus.OK, fallback)
+            except UpdaterBridgeError as discovery_error:
+                json_response(
+                    self,
+                    discovery_error.status,
+                    {"error": discovery_error.code, "message": discovery_error.message},
+                )
             return
         json_response(self, status, response)
 
