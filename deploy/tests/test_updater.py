@@ -140,14 +140,8 @@ class LinuxUpdaterTests(unittest.TestCase):
                     server.server_close()
                     thread.join(timeout=2)
 
-    def test_release_resolution_binds_repository_tag_and_immutable_images(self):
+    def test_release_resolution_uses_direct_exact_stable_asset_and_immutable_images(self):
         version = "1.2.3"
-        release = {
-            "tag_name": f"v{version}",
-            "draft": False,
-            "prerelease": False,
-            "assets": [{"name": local_updater.MANIFEST_ASSET, "browser_download_url": "https://github.com/owner/watcher/manifest.json"}],
-        }
         manifest = {
             "schemaVersion": 1,
             "componentRole": "watcher-control-plane",
@@ -161,12 +155,15 @@ class LinuxUpdaterTests(unittest.TestCase):
             },
             "bundle": {"url": "https://github.com/owner/watcher/bundle.zip", "sha256": "a" * 64, "bytes": 1024},
         }
-        with mock.patch.object(local_updater, "fetch_json", side_effect=[release, manifest]) as fetch:
+        with mock.patch.object(local_updater, "fetch_json", return_value=manifest) as fetch:
             result = local_updater.resolve_release("owner/watcher", version)
         self.assertEqual(manifest, result)
-        self.assertIn("owner/watcher", fetch.call_args_list[0].args[0])
+        self.assertEqual(
+            f"https://github.com/owner/watcher/releases/download/v{version}/{local_updater.MANIFEST_ASSET}",
+            fetch.call_args.args[0],
+        )
         manifest["images"]["api"] = "ghcr.io/owner/watcher-api:latest"
-        with mock.patch.object(local_updater, "fetch_json", side_effect=[release, manifest]):
+        with mock.patch.object(local_updater, "fetch_json", return_value=manifest):
             with self.assertRaises(local_updater.UpdateError):
                 local_updater.resolve_release("owner/watcher", version)
 

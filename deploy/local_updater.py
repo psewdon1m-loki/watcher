@@ -106,7 +106,9 @@ def validate_release_url(url: str) -> None:
 
 def download(url: str, target: str, maximum: int) -> tuple[int, str]:
     validate_release_url(url)
-    request = urllib.request.Request(url, headers={"Accept": "application/octet-stream", "User-Agent": f"vpn-enus-updater/{UPDATER_VERSION}"})
+    parsed = urllib.parse.urlparse(url)
+    accept = "application/vnd.github+json" if parsed.hostname == "api.github.com" else "application/octet-stream"
+    request = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": f"vpn-enus-updater/{UPDATER_VERSION}"})
     total = 0
     digest = hashlib.sha256()
     try:
@@ -173,13 +175,10 @@ def validate_release_manifest(
 
 
 def resolve_release(repository: str, version: str, *, enforce_minimum_updater: bool = True) -> dict[str, Any]:
-    release = fetch_json(f"https://api.github.com/repos/{repository}/releases/tags/v{version}", MAX_MANIFEST_BYTES)
-    if release.get("draft") or release.get("prerelease") or str(release.get("tag_name")) != f"v{version}":
-        raise UpdateError("release is missing, draft, prerelease or identity-mismatched")
-    asset = next((item for item in release.get("assets", []) if item.get("name") == MANIFEST_ASSET), None)
-    if not isinstance(asset, dict):
-        raise UpdateError("release manifest asset is missing")
-    manifest = fetch_json(str(asset.get("browser_download_url") or ""), MAX_MANIFEST_BYTES)
+    manifest = fetch_json(
+        f"https://github.com/{repository}/releases/download/v{version}/{MANIFEST_ASSET}",
+        MAX_MANIFEST_BYTES,
+    )
     return validate_release_manifest(
         manifest,
         version,

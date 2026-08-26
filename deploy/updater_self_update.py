@@ -14,6 +14,7 @@ from typing import Any
 
 from local_updater import (
     MAX_BUNDLE_BYTES,
+    UpdateError,
     download,
     load_release_policy,
     prune,
@@ -201,7 +202,7 @@ def main() -> int:
         mutation_lock.close()
         return 0
     except Exception as exc:
-        message = str(exc) if isinstance(exc, (SelfUpdateError, UpdaterProtocolError)) else type(exc).__name__
+        message = str(exc) if isinstance(exc, (SelfUpdateError, UpdateError, UpdaterProtocolError)) else type(exc).__name__
         if not mutation_started:
             job.transition("FAILED", f"Updater self-update failed before mutation: {message}")
             prune_self_update_state(jobs_dir, backups_dir)

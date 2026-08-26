@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-UPDATER_VERSION = "1.1.1"
+UPDATER_VERSION = "1.1.2"
 DEFAULT_SOCKET_PATH = "/run/vpnenus-updater/updater.sock"
 DEFAULT_PROFILE_DIR = "/etc/vpnenus-updater/profiles.d"
 DEFAULT_STATE_ROOT = "/var/lib/vpnenus-updater"
