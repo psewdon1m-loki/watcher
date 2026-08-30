@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#000000">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'">
+  <meta name="description" content="Cake Project — безопасные и быстрые VLESS-соединения в одно нажатие.">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Cake Project">
+  <meta property="og:description" content="Быстрая связь. Без лишних шагов.">
+  <meta property="og:image" content="https://cake.shmoza.net/initialize/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Cake Project">
+  <meta name="twitter:description" content="Быстрая связь. Без лишних шагов.">
+  <meta name="twitter:image" content="https://cake.shmoza.net/initialize/og.png">
+  <title>Cake Project — инициализация</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+</head>
+<body>
+  <div class="page-grid" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <div class="brand" aria-label="Cake Project">
+      <span>Cake</span><span>Project</span>
+    </div>
+    <div class="channel-state">
+      <span class="state-marker" aria-hidden="true"></span>
+      <span>Secure channel</span>
+    </div>
+  </header>
+
+  <main class="hero">
+    <section class="hero-copy" aria-labelledby="pageTitle">
+      <p class="eyebrow">Персональное подключение / 01</p>
+      <h1 id="pageTitle">Быстрая связь.<br><span>Без лишних шагов.</span></h1>
+      <p class="intro">
+        Cake Project создаёт безопасные VLESS-соединения и сразу копирует готовые ссылки
+        в буфер обмена этого устройства.
+      </p>
+    </section>
+
+    <section class="action-zone" aria-label="Инициализация подключения">
+      <div class="action-rule" aria-hidden="true"><span>READY</span></div>
+      <button id="initializeButton" class="initialize-button" type="button" aria-describedby="statusText">
+        <span class="button-index" aria-hidden="true">01</span>
+        <span class="button-label">Инициализация</span>
+        <span class="button-arrow" aria-hidden="true">→</span>
+      </button>
+      <p id="statusText" class="status-text" role="status" aria-live="polite">
+        Одно нажатие: создать, импортировать, скопировать.
+      </p>
+      <div id="manualCopy" class="manual-copy hidden">
+        <label for="manualLinks">VLESS-ссылки для ручного копирования</label>
+        <textarea id="manualLinks" readonly spellcheck="false"></textarea>
+        <small>Если браузер блокирует буфер обмена, выделите текст и выберите «Копировать».</small>
+      </div>
+    </section>
+
+    <ol class="process" aria-label="Этапы инициализации">
+      <li><span>01</span><strong>Pasar Guard</strong><small>Создание пользователя</small></li>
+      <li><span>02</span><strong>Watcher</strong><small>Импорт подключений</small></li>
+      <li><span>03</span><strong>VLESS</strong><small>Копирование ссылок</small></li>
+    </ol>
+  </main>
+
+  <footer class="site-footer">
+    <span>CAKE / VLESS</span>
+    <span>WINDOWS · ANDROID · IOS</span>
+  </footer>
+
+  <textarea id="copyFallback" class="copy-fallback" tabindex="-1" aria-hidden="true" readonly></textarea>
+  <script src="app.js?v=2"></script>
+</body>
+</html>

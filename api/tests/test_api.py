@@ -105,6 +105,8 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         app._dashboard_auth_failures.clear()
         app._dashboard_auth_blocked_until.clear()
+        app._public_initialization_attempts.clear()
+        app._public_initialization_global_attempts.clear()
         app.invalidate_manifest_cache()
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         app.DB_PATH = os.path.join(self.tmp.name, "watcher.db")
@@ -1337,6 +1339,104 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(connection_id, initialized["connectionId"])
         self.assertEqual(stable_url, initialized["subscriptionUrl"])
         self.assertEqual(1, initialized["count"])
+
+    def test_public_initialization_is_idempotent_imports_pasarguard_and_returns_only_vless(self):
+        with app.connect(app.DB_PATH) as db:
+            db.execute("UPDATE register_entries SET value = 'https://pasarguard.example' WHERE key = 'pasarguard.base_url'")
+            db.execute("UPDATE register_entries SET value = '17' WHERE key = 'pasarguard.user_template_id'")
+            db.execute("UPDATE register_entries SET value = 'pg_key_test' WHERE key = 'pasarguard.api_key'")
+
+        old_request = app.pasarguard_request
+        old_fetch = app.fetch_subscription
+        old_limit = app.PUBLIC_INITIALIZATION_MAX_PER_HOUR
+        created_users = []
+        remote = {}
+
+        def fake_pasarguard_request(method, path, body=None):
+            if method == "GET" and path == "/api/user_template/17":
+                return {"id": 17, "username_prefix": None, "username_suffix": None}
+            if method == "GET" and "/by-username/" in path:
+                raise app.PasarGuardError(404, "pasarguard_http_404", "not found")
+            if method == "POST" and path == "/api/user/from_template":
+                created_users.append(body["username"])
+                remote.update({
+                    "id": 121,
+                    "username": body["username"],
+                    "note": f"managed-by=vpnenus-watcher; connection={body['username']}",
+                    "subscription_url": "/sub/public-token",
+                    "proxy_settings": {"vless": {"id": "public-credential"}},
+                })
+                return dict(remote)
+            if method == "GET" and path == "/api/user/by-id/121":
+                return dict(remote)
+            self.fail(f"Unexpected PasarGuard call: {method} {path}")
+
+        app.pasarguard_request = fake_pasarguard_request
+        app.fetch_subscription = lambda url, verify_tls, **kwargs: [
+            "vless://public-credential@node.example:443?security=reality#public",
+            "trojan://public-credential@node.example:443#not-copied",
+        ]
+        app.PUBLIC_INITIALIZATION_MAX_PER_HOUR = 1
+        try:
+            payload = {"requestId": "a" * 32}
+            json_headers = {"Content-Type": "application/json"}
+            status, first = self.request(
+                "POST", "/api/v1/public/connections/initialize", payload, json_headers
+            )
+            self.assertEqual(201, status, first)
+            self.assertTrue(first["created"])
+            self.assertEqual(1, first["count"])
+            self.assertEqual(
+                ["vless://public-credential@node.example:443?security=reality#public"],
+                first["vlessLinks"],
+            )
+            self.assertNotIn("subscriptionUrl", first)
+            self.assertTrue(first["connectionId"].startswith("web-"))
+            self.assertEqual([first["connectionId"]], created_users)
+
+            stored = app.load_issued_connection(first["connectionId"])
+            self.assertEqual(2, len(stored["configurations"]))
+            self.assertTrue(any(value.startswith("trojan://") for value in stored["configurations"]))
+
+            status, second = self.request(
+                "POST", "/api/v1/public/connections/initialize", payload, json_headers
+            )
+            self.assertEqual(200, status, second)
+            self.assertFalse(second["created"])
+            self.assertEqual(first["connectionId"], second["connectionId"])
+            self.assertEqual(first["vlessLinks"], second["vlessLinks"])
+            self.assertEqual(1, len(created_users))
+
+            status, limited = self.request(
+                "POST",
+                "/api/v1/public/connections/initialize",
+                {"requestId": "b" * 32},
+                json_headers,
+            )
+            self.assertEqual(429, status, limited)
+            self.assertEqual("public_initialization_rate_limited", limited["error"])
+
+            status, invalid = self.request(
+                "POST",
+                "/api/v1/public/connections/initialize",
+                {"requestId": "not-a-secure-request-id"},
+                json_headers,
+            )
+            self.assertEqual(400, status, invalid)
+            self.assertEqual("invalid_initialization_request_id", invalid["error"])
+
+            status, unsupported = self.request(
+                "POST",
+                "/api/v1/public/connections/initialize",
+                {"requestId": "c" * 32},
+                {"Content-Type": "text/plain"},
+            )
+            self.assertEqual(415, status, unsupported)
+            self.assertEqual("json_content_type_required", unsupported["error"])
+        finally:
+            app.PUBLIC_INITIALIZATION_MAX_PER_HOUR = old_limit
+            app.pasarguard_request = old_request
+            app.fetch_subscription = old_fetch
 
     def test_pasarguard_template_affixes_are_rejected_before_user_creation(self):
         old_request = app.pasarguard_request

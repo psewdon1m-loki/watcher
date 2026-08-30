@@ -1,6 +1,7 @@
 limit_req_zone $binary_remote_addr zone=watcher_api:10m rate=30r/s;
 limit_req_zone $binary_remote_addr zone=watcher_assets:10m rate=3r/s;
 limit_req_zone $binary_remote_addr zone=watcher_subscriptions:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=watcher_initialization:10m rate=6r/m;
 limit_conn_zone $binary_remote_addr zone=watcher_connections:10m;
 
 server {
@@ -75,6 +76,13 @@ server {
         proxy_pass http://$api_upstream;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
+    }
+
+    location = /api/v1/public/connections/initialize {
+        limit_req zone=watcher_initialization burst=3 nodelay;
+        proxy_pass http://$api_upstream;
+        proxy_read_timeout 90s;
+        proxy_send_timeout 30s;
     }
 
     location /sub/ {

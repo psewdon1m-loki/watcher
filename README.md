@@ -24,6 +24,13 @@ The dashboard follows the shared operational UI contract from
 - `Settings`: appearance, Sidebar behavior, security snapshot, backup/restore and retained audit events;
 - `Documentation`: an operator guide available from the fixed bottom Sidebar group.
 
+The separate public page at `/initialize/` creates one idempotent Cake
+connection, provisions its PasarGuard user, imports the upstream subscription
+into Watcher and copies only the resulting `vless://` links. It never copies or
+returns the stable internal `/sub/` URL. The page is responsive for desktop,
+Android and iOS browsers and keeps connection data only in memory long enough
+to support an immediate copy retry.
+
 Issued connections, Register values and administrative audit events are stored
 in the main SQLite database and included in Watcher backups.
 
@@ -44,6 +51,8 @@ LOKI_WATCHER_LOCAL_CONTROL_TOKEN=<random-local-updater-token>
 LOKI_WATCHER_IP_GEOLOOKUP_ENABLED=0
 LOKI_WATCHER_PUBLIC_SNI=cake.shmoza.net
 LOKI_WATCHER_PASARGUARD_API_KEY=<panel-api-key>
+LOKI_WATCHER_PUBLIC_INITIALIZATION_MAX_PER_HOUR=5
+LOKI_WATCHER_PUBLIC_INITIALIZATION_GLOBAL_MAX_PER_HOUR=100
 LOKI_WATCHER_CONNECTION_SCAN_INTERVAL_MINUTES=15
 LOKI_WATCHER_LOG_RETENTION_DAYS=30
 LOKI_WATCHER_TELEMETRY_RETENTION_DAYS=30
@@ -101,7 +110,7 @@ Configure the integration and client timing in Watcher → Register:
 watcher.public_sni                    public hostname; HTTPS URL is derived from it
 github.repository                     client releases as owner/repository
 watcher.server_repository             server and updater releases as owner/repository
-pasarguard.base_url                   panel API origin, for example https://panel.example.com
+pasarguard.base_url                   origin serving the complete /api and /sub routes
 pasarguard.user_template_id           numeric user-template ID
 pasarguard.api_key                    secret panel API key
 clients.heartbeat_interval_seconds    normal client contact interval, default 60
@@ -114,6 +123,10 @@ seed for `pasarguard.api_key`; runtime requests read the Register value. The
 dashboard treats that row as write-only: list and update responses expose only
 whether a key is configured. Because Register is complete server state, the key
 is included only inside the encrypted database member of application backups.
+The PasarGuard origin must expose user and template reads, user creation and
+the relative subscription paths returned by that API. Include a non-default
+port when required; a reverse proxy exposing only `POST /api/user/from_template`
+is not a complete integration endpoint.
 
 Create a dedicated PasarGuard API key for the integration. It needs
 `templates.read` plus `users.create`, `users.read` and `users.revoke_sub` for
@@ -151,6 +164,20 @@ containers, read-only root filesystems, dropped capabilities,
 `init-permissions` container has only `CAP_CHOWN`, touches only the two named
 volumes and exits before the non-root API starts; this also migrates volumes
 created by older root-running releases without deleting their data.
+
+### Public browser initialization
+
+`POST /api/v1/public/connections/initialize` accepts a browser-generated,
+128-bit request ID. Watcher hashes that value into a PasarGuard-compatible
+permanent connection ID, so a retry after a dropped response reuses the same
+Watcher record and upstream user instead of issuing duplicates. Successful
+responses contain a `vlessLinks` array and deliberately omit both the
+PasarGuard subscription URL and Watcher's stable custom subscription URL.
+
+New anonymous allocations are limited per source address and globally with the
+two `LOKI_WATCHER_PUBLIC_INITIALIZATION_*` values above. The supplied nginx
+template also applies a separate burst limit to this expensive route. Existing
+request IDs remain retryable without consuming another allocation quota.
 
 ## Production bootstrap
 
@@ -343,6 +370,7 @@ remaining boundaries.
 - Dashboard auth is controlled by `LOKI_WATCHER_DASHBOARD_USERNAME` and `LOKI_WATCHER_DASHBOARD_PASSWORD`. Legacy bearer-token auth via `LOKI_WATCHER_DASHBOARD_TOKEN` still works when username/password are not set.
 - Dashboard authentication is rate-limited per reverse-proxy-derived source: ten failed requests in 60 seconds cause a five-minute block. The supplied nginx template overwrites, rather than trusts, incoming forwarding headers.
 - Ordinary subscription imports require HTTPS, validate every redirect and reject DNS results for loopback, private, link-local, reserved and metadata destinations. The only HTTP/private-origin exception is the exact operator-configured PasarGuard origin.
+- Public browser initialization is intentionally anonymous, idempotent and rate-limited. Treat it as an Internet-facing credential-issuance route and keep the application-level and reverse-proxy limits enabled.
 - Public-IP geolocation is disabled by default. Enabling it is an explicit privacy decision because the configured external lookup receives the observed public IP.
 - The nginx template rejects unexpected Host/SNI values, disables subscription access logging and adds HSTS, CSP and other browser hardening headers. Application containers remain loopback-only behind that boundary.
 - Text log payloads and core telemetry events are retained for 30 days by default. The limits are controlled by `LOKI_WATCHER_LOG_RETENTION_DAYS` and `LOKI_WATCHER_TELEMETRY_RETENTION_DAYS`.

@@ -33,6 +33,7 @@ jobs:
           bash -n deploy/bootstrap.sh deploy/install.sh deploy/watcherctl
           python -m py_compile api/app.py common/backup_contract.py common/database_lock.py worker/worker.py worker/backup.py deploy/validate_env.py deploy/recovery_tool.py deploy/updater_common.py deploy/local_updater.py deploy/updater_daemon.py deploy/updater_client.py deploy/updater_self_update.py scripts/build_release.py scripts/verify_repository.py
           node --check web/static/app.js
+          node --check web/static/initialize/app.js
           python scripts/verify_repository.py
       - name: Scan source, configuration and dependency files
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

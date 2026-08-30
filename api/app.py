@@ -77,6 +77,18 @@ PASARGUARD_BASE_URL_DEFAULT = os.environ.get("LOKI_WATCHER_PASARGUARD_BASE_URL",
 PASARGUARD_TEMPLATE_ID_DEFAULT = os.environ.get("LOKI_WATCHER_PASARGUARD_USER_TEMPLATE_ID", "").strip()
 PASARGUARD_TIMEOUT_SECONDS = min(60, max(2, int(os.environ.get("LOKI_WATCHER_PASARGUARD_TIMEOUT_SECONDS", "20"))))
 PASARGUARD_MAX_RESPONSE_BYTES = min(MAX_SUBSCRIPTION_BYTES, 2 * 1024 * 1024)
+PUBLIC_INITIALIZATION_WINDOW_SECONDS = 3600
+PUBLIC_INITIALIZATION_MAX_PER_HOUR = min(
+    100,
+    max(1, int(os.environ.get("LOKI_WATCHER_PUBLIC_INITIALIZATION_MAX_PER_HOUR", "5"))),
+)
+PUBLIC_INITIALIZATION_GLOBAL_MAX_PER_HOUR = min(
+    10000,
+    max(
+        PUBLIC_INITIALIZATION_MAX_PER_HOUR,
+        int(os.environ.get("LOKI_WATCHER_PUBLIC_INITIALIZATION_GLOBAL_MAX_PER_HOUR", "100")),
+    ),
+)
 PASSWORD_HASH_ITERATIONS = 310000
 MIN_OPERATOR_PASSWORD_LENGTH = 12
 AUDIT_MAX_ENTRIES = int(os.environ.get("LOKI_WATCHER_AUDIT_MAX_ENTRIES", "10000"))
@@ -141,6 +153,9 @@ _request_context = threading.local()
 _restore_lock = threading.Lock()
 _pasarguard_operation_lock = threading.Lock()
 _client_connection_initialization_lock = threading.Lock()
+_public_connection_initialization_lock = threading.Lock()
+_public_initialization_attempts: dict[str, list[float]] = {}
+_public_initialization_global_attempts: list[float] = []
 _dashboard_auth_lock = threading.Lock()
 _dashboard_auth_failures: dict[str, list[float]] = {}
 _dashboard_auth_blocked_until: dict[str, float] = {}
@@ -148,6 +163,7 @@ DASHBOARD_AUTH_WINDOW_SECONDS = 60
 DASHBOARD_AUTH_MAX_FAILURES = 10
 DASHBOARD_AUTH_BLOCK_SECONDS = 300
 PASARGUARD_USERNAME_RE = re.compile(r"^[A-Za-z0-9._@-]{3,128}$")
+PUBLIC_INITIALIZATION_REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 class RequestBodyError(Exception):
@@ -454,7 +470,11 @@ def init_db(path: str | None = None) -> None:
             ("github.repository", GITHUB_REPOSITORY, "GitHub owner/repository used for client update artifacts."),
             ("updates.manifest_public_key_pem", "", "Optional RSA public key used by clients to require signed update manifests."),
             ("watcher.server_repository", WATCHER_SERVER_REPOSITORY, "GitHub repository used by the privileged Watcher server updater."),
-            ("pasarguard.base_url", PASARGUARD_BASE_URL_DEFAULT, "PasarGuard panel origin used for user provisioning and reset."),
+            (
+                "pasarguard.base_url",
+                PASARGUARD_BASE_URL_DEFAULT,
+                "PasarGuard origin serving the complete /api and relative /sub endpoints; include any non-default port.",
+            ),
             ("pasarguard.user_template_id", PASARGUARD_TEMPLATE_ID_DEFAULT, "PasarGuard user template ID used for new connections."),
             ("pasarguard.api_key", PASARGUARD_API_KEY, "Secret PasarGuard API key used for provisioning, synchronization and reset."),
             ("clients.heartbeat_interval_seconds", str(CLIENT_HEARTBEAT_INTERVAL_SECONDS_DEFAULT), "Normal client heartbeat, command-poll and telemetry contact interval in seconds."),
@@ -1309,6 +1329,43 @@ def clear_dashboard_auth_failures(handler: BaseHTTPRequestHandler) -> None:
     with _dashboard_auth_lock:
         _dashboard_auth_failures.pop(key, None)
         _dashboard_auth_blocked_until.pop(key, None)
+
+
+def public_initialization_rate_limited(handler: BaseHTTPRequestHandler) -> bool:
+    """Record one new anonymous allocation and enforce bounded hourly quotas."""
+    now = time.monotonic()
+    cutoff = now - PUBLIC_INITIALIZATION_WINDOW_SECONDS
+    source = client_ip(handler)
+
+    for key, values in list(_public_initialization_attempts.items()):
+        recent = [value for value in values if value >= cutoff]
+        if recent:
+            _public_initialization_attempts[key] = recent
+        else:
+            _public_initialization_attempts.pop(key, None)
+    recent_source = _public_initialization_attempts.get(source, [])
+    _public_initialization_global_attempts[:] = [
+        value for value in _public_initialization_global_attempts if value >= cutoff
+    ]
+    if (
+        len(recent_source) >= PUBLIC_INITIALIZATION_MAX_PER_HOUR
+        or len(_public_initialization_global_attempts) >= PUBLIC_INITIALIZATION_GLOBAL_MAX_PER_HOUR
+    ):
+        if recent_source:
+            _public_initialization_attempts[source] = recent_source
+        else:
+            _public_initialization_attempts.pop(source, None)
+        return True
+
+    recent_source.append(now)
+    _public_initialization_attempts[source] = recent_source
+    _public_initialization_global_attempts.append(now)
+    return False
+
+
+def public_initialization_actor(handler: BaseHTTPRequestHandler) -> str:
+    source_digest = hashlib.sha256(client_ip(handler).encode("utf-8")).hexdigest()[:12]
+    return f"public-web:{source_digest}"
 
 
 def region_for_ip(value: str) -> str:
@@ -3138,6 +3195,10 @@ class WatcherHandler(BaseHTTPRequestHandler):
                 self.handle_initialize_client_connection()
                 return
 
+            if path == "/api/v1/public/connections/initialize":
+                self.handle_initialize_public_connection()
+                return
+
             if path == "/api/v1/telemetry/batch":
                 self.handle_batch()
                 return
@@ -3952,6 +4013,123 @@ class WatcherHandler(BaseHTTPRequestHandler):
                     "updatedAt": current["updated_at"],
                     "count": len(current.get("configurations", [])),
                     "clientConfig": runtime_config,
+                },
+            )
+
+    def handle_initialize_public_connection(self) -> None:
+        content_type = (self.headers.get("Content-Type") or "").partition(";")[0].strip().lower()
+        if content_type != "application/json":
+            json_response(self, HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "json_content_type_required"})
+            return
+        try:
+            body, _ = read_json(self)
+        except json.JSONDecodeError:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
+            return
+
+        request_id = str(body.get("requestId") or "").strip().lower()
+        if not PUBLIC_INITIALIZATION_REQUEST_ID_RE.fullmatch(request_id):
+            json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid_initialization_request_id"})
+            return
+
+        connection_digest = hashlib.sha256(request_id.encode("ascii")).hexdigest()[:24]
+        connection_id = f"web-{connection_digest}"
+        actor = public_initialization_actor(self)
+
+        with _public_connection_initialization_lock:
+            with connect() as db:
+                connection = db.execute(
+                    "SELECT * FROM issued_connections WHERE id = ?",
+                    (connection_id,),
+                ).fetchone()
+                created = connection is None
+                if created:
+                    if public_initialization_rate_limited(self):
+                        write_audit(
+                            db,
+                            "denied",
+                            "public.connection.rate-limit",
+                            "public-initialization",
+                            actor,
+                            "Anonymous connection initialization rate limit reached.",
+                            actor_type="anonymous",
+                            target_type="api-route",
+                        )
+                        json_response(
+                            self,
+                            HTTPStatus.TOO_MANY_REQUESTS,
+                            {
+                                "error": "public_initialization_rate_limited",
+                                "retryAfterSeconds": PUBLIC_INITIALIZATION_WINDOW_SECONDS,
+                            },
+                        )
+                        return
+
+                    now = utc_now()
+                    db.execute(
+                        """
+                        INSERT INTO issued_connections
+                            (id, telegram_id, telegram_username, subscription_url, configurations_json,
+                             verify_tls, status, public_token, revision, provisioning_state,
+                             subscription_renewal_date, track_subscription, created_at, updated_at)
+                        VALUES (?, NULL, NULL, '', '[]', 1, 'active', ?, 1, 'draft', ?, 1, ?, ?)
+                        """,
+                        (connection_id, secrets.token_urlsafe(32), date.today().isoformat(), now, now),
+                    )
+                    upsert_connection_source(
+                        db,
+                        connection_id=connection_id,
+                        provider="direct",
+                        subscription_url="",
+                        configurations=[],
+                        verify_tls=True,
+                    )
+                    write_audit(
+                        db,
+                        "success",
+                        "public.connection.create",
+                        connection_id,
+                        actor,
+                        "A stable connection was allocated from the public initialization page.",
+                        actor_type="anonymous",
+                        target_type="connection",
+                    )
+
+            try:
+                current = load_issued_connection(connection_id)
+                vless_links = [
+                    value
+                    for value in current.get("configurations", [])
+                    if isinstance(value, str) and value.lower().startswith("vless://")
+                ]
+                if not vless_links:
+                    current = provision_pasarguard_connection(connection_id, actor)
+                    vless_links = [
+                        value
+                        for value in current.get("configurations", [])
+                        if isinstance(value, str) and value.lower().startswith("vless://")
+                    ]
+                if not vless_links:
+                    raise PasarGuardError(
+                        HTTPStatus.BAD_GATEWAY,
+                        "pasarguard_subscription_contains_no_vless",
+                        "PasarGuard subscription contains no VLESS connections.",
+                    )
+            except PasarGuardError as exc:
+                json_response(self, exc.status, {"error": exc.code, "message": exc.message})
+                return
+
+            json_response(
+                self,
+                HTTPStatus.CREATED if created else HTTPStatus.OK,
+                {
+                    "status": "ready",
+                    "created": created,
+                    "connectionId": current["id"],
+                    "createdAt": current["created_at"],
+                    "updatedAt": current["updated_at"],
+                    "count": len(vless_links),
+                    "vlessLinks": vless_links,
                 },
             )
 
