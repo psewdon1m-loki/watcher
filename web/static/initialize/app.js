@@ -4,12 +4,147 @@ const copyFallback = document.querySelector("#copyFallback");
 const buttonLabel = initializeButton.querySelector(".button-label");
 const manualCopy = document.querySelector("#manualCopy");
 const manualLinks = document.querySelector("#manualLinks");
+const designTime = document.querySelector("#designTime");
+const cakeBurstButton = document.querySelector("#cakeBurstButton");
+const cakeParticles = document.querySelector("#cakeParticles");
 
 const API_PATH = "/api/v1/public/connections/initialize";
 const REQUEST_STORAGE_KEY = "cake-project.initialization-request";
 
 let cachedVlessText = "";
 let requestPending = false;
+let cakeBurstActive = false;
+let cakeBurstFrame = 0;
+
+const designTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "long",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+const accessibleTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "long",
+  timeStyle: "medium",
+});
+
+function updateDesignTime() {
+  const now = new Date();
+  const parts = Object.fromEntries(
+    designTimeFormatter.formatToParts(now).map(({ type, value }) => [type, value]),
+  );
+  designTime.textContent = `${parts.day} ${parts.month.toUpperCase()} ${parts.year} ${parts.hour}-${parts.minute}-${parts.second}`;
+  designTime.dateTime = now.toISOString();
+  designTime.setAttribute("aria-label", accessibleTimeFormatter.format(now));
+}
+
+updateDesignTime();
+window.setInterval(updateDesignTime, 1000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) updateDesignTime();
+});
+
+function randomBetween(minimum, maximum) {
+  return minimum + Math.random() * (maximum - minimum);
+}
+
+function finishCakeBurst() {
+  window.cancelAnimationFrame(cakeBurstFrame);
+  cakeParticles.replaceChildren();
+  cakeBurstButton.disabled = false;
+  cakeBurstButton.removeAttribute("aria-busy");
+  cakeBurstActive = false;
+}
+
+function startCakeBurst() {
+  if (cakeBurstActive) return;
+
+  cakeBurstActive = true;
+  cakeBurstButton.disabled = true;
+  cakeBurstButton.setAttribute("aria-busy", "true");
+
+  const sourceRect = cakeBurstButton.getBoundingClientRect();
+  const particleCount = Math.floor(randomBetween(1, 11));
+  const maximumSize = sourceRect.width * 0.5;
+  const minimumSize = Math.min(maximumSize, Math.max(18, sourceRect.width * 0.12));
+  const particles = [];
+
+  for (let index = 0; index < particleCount; index += 1) {
+    const size = randomBetween(minimumSize, maximumSize);
+    const direction = Math.random() < 0.5 ? -1 : 1;
+    const particle = document.createElement("img");
+    particle.className = "cake-particle";
+    particle.src = "favicon.png?v=2";
+    particle.alt = "";
+    particle.draggable = false;
+    particle.width = Math.round(size);
+    particle.height = Math.round(size);
+    cakeParticles.append(particle);
+
+    particles.push({
+      element: particle,
+      size,
+      x: sourceRect.left + sourceRect.width / 2 - size / 2 + randomBetween(-12, 12),
+      y: sourceRect.top + sourceRect.height / 2 - size / 2 + randomBetween(-8, 8),
+      velocityX: direction * randomBetween(90, 310),
+      velocityY: randomBetween(-530, -280),
+      gravity: randomBetween(760, 1080),
+      rotation: randomBetween(-35, 35),
+      rotationSpeed: randomBetween(-300, 300),
+      alive: true,
+    });
+  }
+
+  let previousTimestamp;
+  let elapsed = 0;
+
+  function animateCakeBurst(timestamp) {
+    if (previousTimestamp === undefined) previousTimestamp = timestamp;
+    const delta = Math.min((timestamp - previousTimestamp) / 1000, 0.034);
+    previousTimestamp = timestamp;
+    elapsed += delta;
+    let liveParticles = 0;
+
+    for (const particle of particles) {
+      if (!particle.alive) continue;
+
+      particle.velocityY += particle.gravity * delta;
+      particle.x += particle.velocityX * delta;
+      particle.y += particle.velocityY * delta;
+      particle.rotation += particle.rotationSpeed * delta;
+
+      const fadeStart = window.innerHeight * 0.72;
+      const remainingFall = Math.max(window.innerHeight + particle.size - fadeStart, 1);
+      const opacity = particle.y > fadeStart
+        ? Math.max(0, 1 - (particle.y - fadeStart) / remainingFall)
+        : 1;
+
+      particle.element.style.opacity = String(opacity);
+      particle.element.style.transform = `translate3d(${particle.x}px, ${particle.y}px, 0) rotate(${particle.rotation}deg)`;
+
+      if (particle.y > window.innerHeight + particle.size || elapsed > 5.5) {
+        particle.alive = false;
+        particle.element.remove();
+      } else {
+        liveParticles += 1;
+      }
+    }
+
+    if (liveParticles > 0) {
+      cakeBurstFrame = window.requestAnimationFrame(animateCakeBurst);
+    } else {
+      finishCakeBurst();
+    }
+  }
+
+  cakeBurstFrame = window.requestAnimationFrame(animateCakeBurst);
+}
+
+cakeBurstButton.addEventListener("click", startCakeBurst);
+window.addEventListener("pagehide", finishCakeBurst);
 
 function setStatus(message, state = "") {
   statusText.dataset.state = state;
