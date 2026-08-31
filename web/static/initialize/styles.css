@@ -506,6 +506,13 @@ h2 {
 
 .apps-copy {
   margin-top: 45px;
+  opacity: 1;
+  transition: opacity 180ms ease;
+  will-change: opacity;
+}
+
+.apps-copy.is-switching {
+  opacity: 0;
 }
 
 .installation-copy {
@@ -1219,7 +1226,8 @@ h2 {
 
   .page-rail,
   .cake-mark,
-  .action-button {
+  .action-button,
+  .apps-copy {
     transition: none;
   }
 

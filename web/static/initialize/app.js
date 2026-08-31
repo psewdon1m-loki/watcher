@@ -9,6 +9,7 @@ const cakeBurstButton = document.querySelector("#cakeBurstButton");
 const cakeParticles = document.querySelector("#cakeParticles");
 const paymentPage = document.querySelector("#paymentPage");
 const appsPage = document.querySelector("#appsPage");
+const appsCopy = document.querySelector(".apps-copy");
 const connectionButton = document.querySelector("#connectionButton");
 const platformButtons = [...document.querySelectorAll(".platform-button")];
 const platformDescription = document.querySelector("#platformDescription");
@@ -22,6 +23,7 @@ const pageRail = document.querySelector(".page-rail");
 const API_PATH = "/api/v1/public/connections/initialize";
 const REQUEST_STORAGE_KEY = "cake-project.initialization-request";
 const LANGUAGE_STORAGE_KEY = "cake-project.language";
+const PLATFORM_FADE_OUT_MS = 180;
 
 let cachedVlessText = "";
 let requestPending = false;
@@ -34,6 +36,7 @@ let currentStatus = { key: "statusReady", state: "", variables: {} };
 let wheelLocked = false;
 let wheelUnlockTimer = 0;
 let railTransitionTimer = 0;
+let platformTransitionTimer = 0;
 let designTimeFormatter;
 let accessibleTimeFormatter;
 
@@ -50,6 +53,7 @@ const translations = {
     initialize: "Инициализация",
     initializePending: "Создаём подключение…",
     initializeRetry: "Повторить инициализацию",
+    copyLinks: "Скопировать",
     manualLabel: "VLESS-ссылки для ручного копирования",
     manualHint: "Если браузер блокирует буфер обмена, выделите текст и выберите «Копировать».",
     connection: "Подключение",
@@ -64,9 +68,9 @@ const translations = {
     languageAria: "Выбор языка",
     statusReady: "Готово к созданию персонального подключения.",
     statusCopiedAgain: "VLESS-ссылки снова скопированы.",
-    statusCopyDenied: "Браузер не разрешил копирование. Разрешите доступ к буферу и нажмите ещё раз.",
+    statusCopyDenied: "Копирование заблокировано. Скопируйте VLESS-ссылки из поля ниже.",
     statusCreating: "Создаём пользователя в Pasar Guard и импортируем подключения…",
-    statusReadyNotCopied: ({ count }) => `Подключение готово (${count}). Нажмите кнопку ещё раз, чтобы скопировать VLESS-ссылки.`,
+    statusReadyNotCopied: "Подключение готово. Нажмите «Скопировать» ещё раз.",
     statusCopied: ({ count }) => count === 1 ? "Готово: VLESS-ссылка скопирована." : `Готово: VLESS-ссылки скопированы (${count}).`,
     statusGenericError: "Не удалось создать подключение. Повторите попытку.",
     subscriptionDescription: ({ appName }) => `В Вашем буфере обмена уже сохранены подключения. Откройте ${appName}, нажмите «+» для добавления нового подключения и выберите «Импорт из буфера обмена». При необходимости Вы можете заново скопировать ссылки кнопкой «Инициализация» выше.`,
@@ -96,6 +100,7 @@ const translations = {
     initialize: "Initialize",
     initializePending: "Creating connection…",
     initializeRetry: "Retry initialization",
+    copyLinks: "Copy links",
     manualLabel: "VLESS links for manual copying",
     manualHint: "If the browser blocks clipboard access, select the text and choose Copy.",
     connection: "Connection",
@@ -110,9 +115,9 @@ const translations = {
     languageAria: "Choose language",
     statusReady: "Ready to create a personal connection.",
     statusCopiedAgain: "VLESS links copied again.",
-    statusCopyDenied: "The browser blocked clipboard access. Allow access and try again.",
+    statusCopyDenied: "Clipboard access was blocked. Copy the VLESS links from the field below.",
     statusCreating: "Creating a Pasar Guard user and importing connections…",
-    statusReadyNotCopied: ({ count }) => `Connection ready (${count}). Click the button again to copy the VLESS links.`,
+    statusReadyNotCopied: "Connection ready. Tap “Copy links” once more.",
     statusCopied: ({ count }) => count === 1 ? "Done: VLESS link copied." : `Done: VLESS links copied (${count}).`,
     statusGenericError: "Could not create the connection. Please try again.",
     subscriptionDescription: ({ appName }) => `Your connections are already saved to the clipboard. Open ${appName}, tap “+” to add a new connection, and choose “Import from clipboard”. If needed, use the Initialize button above to copy the links again.`,
@@ -249,7 +254,17 @@ function handleWheel(event) {
 
 window.addEventListener("wheel", handleWheel, { passive: false });
 
-function selectPlatform(platform) {
+function renderPlatformContent(platform) {
+  const settings = translations[currentLanguage].platforms[platform];
+  if (!settings) return;
+
+  platformDescription.textContent = settings.description;
+  subscriptionDescription.textContent = translate("subscriptionDescription", { appName: settings.appName });
+  downloadButton.href = platformDownloadUrls[platform];
+  downloadButton.setAttribute("aria-label", settings.downloadLabel);
+}
+
+function selectPlatform(platform, animate = false) {
   const settings = translations[currentLanguage].platforms[platform];
   if (!settings) return;
 
@@ -259,10 +274,28 @@ function selectPlatform(platform) {
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-pressed", String(selected));
   });
-  platformDescription.textContent = settings.description;
-  subscriptionDescription.textContent = translate("subscriptionDescription", { appName: settings.appName });
-  downloadButton.href = platformDownloadUrls[platform];
-  downloadButton.setAttribute("aria-label", settings.downloadLabel);
+
+  window.clearTimeout(platformTransitionTimer);
+  platformTransitionTimer = 0;
+
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  if (!animate || reduceMotion) {
+    appsCopy.classList.remove("is-switching");
+    appsCopy.removeAttribute("aria-busy");
+    renderPlatformContent(platform);
+    return;
+  }
+
+  appsCopy.classList.add("is-switching");
+  appsCopy.setAttribute("aria-busy", "true");
+  platformTransitionTimer = window.setTimeout(() => {
+    platformTransitionTimer = 0;
+    renderPlatformContent(currentPlatform);
+    window.requestAnimationFrame(() => {
+      appsCopy.classList.remove("is-switching");
+      appsCopy.removeAttribute("aria-busy");
+    });
+  }, PLATFORM_FADE_OUT_MS);
 }
 
 function renderStatus() {
@@ -311,7 +344,7 @@ function applyLanguage(language, persist = false) {
 
 connectionButton.addEventListener("click", () => scrollToPage(appsPage));
 platformButtons.forEach((button) => {
-  button.addEventListener("click", () => selectPlatform(button.dataset.platform));
+  button.addEventListener("click", () => selectPlatform(button.dataset.platform, true));
 });
 languageButtons.forEach((button) => {
   button.addEventListener("click", () => applyLanguage(button.dataset.language, true));
@@ -527,6 +560,13 @@ async function copyText(text) {
   return legacyCopy(text);
 }
 
+async function copyTextFromGesture(text) {
+  // Telegram and older WebViews often expose only the legacy copy command.
+  // Trying it synchronously preserves the click's transient user activation.
+  if (legacyCopy(text)) return true;
+  return copyText(text);
+}
+
 function readableErrorKey(error) {
   return translations[currentLanguage].errors[error.message]
     ? `errors.${error.message}`
@@ -537,8 +577,9 @@ async function handleInitialization() {
   if (requestPending) return;
 
   if (cachedVlessText) {
-    const copied = await copyText(cachedVlessText);
+    const copied = await copyTextFromGesture(cachedVlessText);
     setManualFallback(copied ? "" : cachedVlessText);
+    setButtonLabel(copied ? "initialize" : "copyLinks");
     setStatus(
       copied ? "statusCopiedAgain" : "statusCopyDenied",
       copied ? "success" : "error",
@@ -565,9 +606,9 @@ async function handleInitialization() {
 
     let copied = clipboardAttempt ? await clipboardAttempt : false;
     if (!copied) copied = await copyText(cachedVlessText);
-    setManualFallback(copied ? "" : cachedVlessText);
+    setManualFallback("");
 
-    setButtonLabel("initialize");
+    setButtonLabel(copied ? "initialize" : "copyLinks");
     setStatus(
       copied ? "statusCopied" : "statusReadyNotCopied",
       copied ? "success" : "error",
