@@ -31,62 +31,137 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=13">
+  <link rel="stylesheet" href="styles.css?v=20">
 </head>
 <body>
   <header class="site-header">
     <div class="channel-state">
       <span class="state-marker" aria-hidden="true"></span>
-      <span>Secure channel</span>
+      <span data-i18n="channel">Защищённый канал</span>
     </div>
     <time id="designTime" class="design-time">-- -------- ---- -- -- --</time>
   </header>
 
-  <main class="page-stage">
-    <section class="brand-lockup" aria-labelledby="pageTitle">
-      <button id="cakeBurstButton" class="cake-mark" type="button" aria-label="Запустить анимацию тортика">
-        <img src="cake-mark.png" alt="">
-      </button>
-      <h1 id="pageTitle">cake project</h1>
-    </section>
+  <div class="page-rail" aria-hidden="true"></div>
 
-    <section class="connection-panel" aria-label="Персональное подключение">
-      <div class="hero-copy">
-        <p class="eyebrow">Персональное подключение / 1</p>
-        <h2>Быстрое и безопасное<br>proxy соединение</h2>
-        <p class="intro">
-          Cake Project предлагает безопасные и стабильные VLESS-соединения. Инициализация<br class="desktop-break">
-          создаст для Вас персональное подключение и сразу скопирует его в буфер обмена<br class="desktop-break">
-          Вашего устройства.
-        </p>
+  <main class="page-flow">
+    <section id="initializePage" class="page-stage page-section" aria-labelledby="pageTitle">
+      <div class="brand-lockup">
+        <button id="cakeBurstButton" class="cake-mark" type="button" aria-label="Запустить анимацию тортика" data-i18n-aria-label="cakeAria">
+          <img src="cake-mark.png" alt="">
+        </button>
+        <h1 id="pageTitle">cake project</h1>
       </div>
 
-      <section class="action-zone" aria-label="Инициализация подключения">
-        <div class="ready-label" aria-hidden="true">READY</div>
-        <button id="initializeButton" class="initialize-button" type="button" aria-describedby="statusText">
-          <span class="button-index" aria-hidden="true">01</span>
-          <span class="button-label">Инициализация</span>
-          <span class="button-arrow" aria-hidden="true">→</span>
-        </button>
-        <p id="statusText" class="status-text" role="status" aria-live="polite">
-          Готово к созданию персонального подключения.
-        </p>
-        <div id="manualCopy" class="manual-copy hidden">
-          <label for="manualLinks">VLESS-ссылки для ручного копирования</label>
-          <textarea id="manualLinks" readonly spellcheck="false"></textarea>
-          <small>Если браузер блокирует буфер обмена, выделите текст и выберите «Копировать».</small>
+      <div class="connection-panel" aria-label="Персональное подключение">
+        <div class="hero-copy">
+          <p class="eyebrow" data-i18n="personalEyebrow">Персональное подключение / 1</p>
+          <h2 data-i18n-html="heroTitle">Быстрое и безопасное<br>proxy соединение</h2>
+          <p class="intro" data-i18n-html="heroIntro">
+            Cake Project предлагает безопасные и стабильные VLESS-соединения. Инициализация<br class="desktop-break">
+            создаст для Вас персональное подключение и сразу скопирует его в буфер обмена<br class="desktop-break">
+            Вашего устройства.
+          </p>
         </div>
-      </section>
+
+        <section class="action-zone" aria-label="Инициализация подключения" data-i18n-aria-label="initializeAreaAria">
+          <div class="ready-label" aria-hidden="true">READY</div>
+          <button id="initializeButton" class="action-button initialize-button" type="button" aria-describedby="statusText">
+            <span class="button-index" aria-hidden="true">01</span>
+            <span class="button-label" data-i18n="initialize">Инициализация</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+          <p id="statusText" class="status-text" role="status" aria-live="polite">
+            Готово к созданию персонального подключения.
+          </p>
+          <div id="manualCopy" class="manual-copy hidden">
+            <label for="manualLinks" data-i18n="manualLabel">VLESS-ссылки для ручного копирования</label>
+            <textarea id="manualLinks" readonly spellcheck="false"></textarea>
+            <small data-i18n="manualHint">Если браузер блокирует буфер обмена, выделите текст и выберите «Копировать».</small>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="paymentPage" class="page-section payment-page" aria-labelledby="paymentTitle">
+      <div class="payment-stage">
+        <div class="payment-head">
+          <button id="connectionButton" class="action-button connection-button" type="button">
+            <span class="button-index" aria-hidden="true">02</span>
+            <span class="button-label" data-i18n="connection">Подключение</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+          <div class="payment-word" aria-hidden="true">plata</div>
+        </div>
+
+        <div class="payment-copy">
+          <p class="eyebrow" data-i18n="paymentEyebrow">Безопасная оплата / 2</p>
+          <h2 id="paymentTitle" data-i18n-html="paymentTitle">Своевременная оплата за услуги<br>обеспечит стабильность<br>подключений</h2>
+          <p class="intro" data-i18n-html="paymentIntro">
+            Cake Project не является коммерческим проектом, однако финансовая помощь наших<br class="desktop-break">
+            пользователей позволяет поддерживать инфраструктуру сети и работоспособность<br class="desktop-break">
+            соединений.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="appsPage" class="page-section apps-page" aria-labelledby="appsTitle">
+      <div class="apps-stage">
+        <div class="platform-picker" role="group" aria-label="Выбор платформы" data-i18n-aria-label="platformGroupAria">
+          <button class="action-button platform-button is-selected" type="button" data-platform="ios" aria-pressed="true">
+            <span class="button-index" aria-hidden="true">03</span>
+            <span class="button-label">ios - iphone</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+          <button class="action-button platform-button" type="button" data-platform="android" aria-pressed="false">
+            <span class="button-index" aria-hidden="true">04</span>
+            <span class="button-label">android</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+          <button class="action-button platform-button" type="button" data-platform="windows" aria-pressed="false">
+            <span class="button-index" aria-hidden="true">05</span>
+            <span class="button-label">windows</span>
+            <span class="button-arrow" aria-hidden="true">↓</span>
+          </button>
+        </div>
+
+        <div class="apps-copy">
+          <p class="eyebrow" data-i18n="stableEyebrow">Стабильное подключение / 3</p>
+          <div id="platformInstructions" class="installation-copy" aria-live="polite">
+            <section class="instruction-step">
+              <h2 id="appsTitle" data-i18n="installTitle">1. Установка приложения</h2>
+              <p id="platformDescription" class="intro">Для iPhone установите приложение Incy из App Store, затем откройте его и разрешите добавление VPN-конфигурации.</p>
+              <a id="downloadButton" class="action-button download-button" href="https://apps.apple.com/ru/app/incy/id6756943388" target="_blank" rel="noopener noreferrer">
+                <span class="button-index" aria-hidden="true">06</span>
+                <span class="button-label" data-i18n="download">Скачать</span>
+                <span class="button-arrow" aria-hidden="true">→</span>
+              </a>
+            </section>
+
+            <section class="instruction-step subscription-step">
+              <h2 data-i18n="subscriptionTitle">2. Добавление подписки</h2>
+              <p id="subscriptionDescription" class="intro">
+                В Вашем буфере обмена уже сохранены подключения. Откройте Incy, нажмите «+» для добавления нового подключения и выберите «Импорт из буфера обмена». При необходимости Вы можете заново скопировать ссылки кнопкой «Инициализация» выше.
+              </p>
+            </section>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 
   <footer class="site-footer">
     <span>CAKE PROJECT</span>
-    <span>WINDOWS / IOS / ANDROID</span>
+    <div class="language-switch" role="group" aria-label="Выбор языка" data-i18n-aria-label="languageAria">
+      <button type="button" data-language="en" aria-pressed="false">ENG</button>
+      <span aria-hidden="true">/</span>
+      <button type="button" data-language="ru" aria-pressed="true">RUS</button>
+    </div>
   </footer>
 
   <div id="cakeParticles" class="cake-particles" aria-hidden="true"></div>
   <textarea id="copyFallback" class="copy-fallback" tabindex="-1" aria-hidden="true" readonly></textarea>
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

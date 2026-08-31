@@ -7,29 +7,169 @@ const manualLinks = document.querySelector("#manualLinks");
 const designTime = document.querySelector("#designTime");
 const cakeBurstButton = document.querySelector("#cakeBurstButton");
 const cakeParticles = document.querySelector("#cakeParticles");
+const paymentPage = document.querySelector("#paymentPage");
+const appsPage = document.querySelector("#appsPage");
+const connectionButton = document.querySelector("#connectionButton");
+const platformButtons = [...document.querySelectorAll(".platform-button")];
+const platformDescription = document.querySelector("#platformDescription");
+const subscriptionDescription = document.querySelector("#subscriptionDescription");
+const downloadButton = document.querySelector("#downloadButton");
+const languageButtons = [...document.querySelectorAll("[data-language]")];
+const pageSections = [...document.querySelectorAll(".page-section")];
+const descriptionMeta = document.querySelector('meta[name="description"]');
+const pageRail = document.querySelector(".page-rail");
 
 const API_PATH = "/api/v1/public/connections/initialize";
 const REQUEST_STORAGE_KEY = "cake-project.initialization-request";
+const LANGUAGE_STORAGE_KEY = "cake-project.language";
 
 let cachedVlessText = "";
 let requestPending = false;
 let cakeBurstActive = false;
 let cakeBurstFrame = 0;
+let currentLanguage = "ru";
+let currentPlatform = "ios";
+let currentButtonLabelKey = "initialize";
+let currentStatus = { key: "statusReady", state: "", variables: {} };
+let wheelLocked = false;
+let wheelUnlockTimer = 0;
+let railTransitionTimer = 0;
+let designTimeFormatter;
+let accessibleTimeFormatter;
 
-const designTimeFormatter = new Intl.DateTimeFormat("en-GB", {
-  day: "2-digit",
-  month: "long",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
+const translations = {
+  ru: {
+    title: "Cake Project — инициализация",
+    description: "Cake Project — безопасные и быстрые VLESS-соединения в одно нажатие.",
+    channel: "Защищённый канал",
+    cakeAria: "Запустить анимацию тортика",
+    personalEyebrow: "Персональное подключение / 1",
+    heroTitle: "Быстрое и безопасное<br>proxy соединение",
+    heroIntro: "Cake Project предлагает безопасные и стабильные VLESS-соединения. Инициализация<br class=\"desktop-break\"> создаст для Вас персональное подключение и сразу скопирует его в буфер обмена<br class=\"desktop-break\"> Вашего устройства.",
+    initializeAreaAria: "Инициализация подключения",
+    initialize: "Инициализация",
+    initializePending: "Создаём подключение…",
+    initializeRetry: "Повторить инициализацию",
+    manualLabel: "VLESS-ссылки для ручного копирования",
+    manualHint: "Если браузер блокирует буфер обмена, выделите текст и выберите «Копировать».",
+    connection: "Подключение",
+    paymentEyebrow: "Безопасная оплата / 2",
+    paymentTitle: "Своевременная оплата за услуги<br>обеспечит стабильность<br>подключений",
+    paymentIntro: "Cake Project не является коммерческим проектом, однако финансовая помощь наших<br class=\"desktop-break\"> пользователей позволяет поддерживать инфраструктуру сети и работоспособность<br class=\"desktop-break\"> соединений.",
+    platformGroupAria: "Выбор платформы",
+    stableEyebrow: "Стабильное подключение / 3",
+    installTitle: "1. Установка приложения",
+    subscriptionTitle: "2. Добавление подписки",
+    download: "Скачать",
+    languageAria: "Выбор языка",
+    statusReady: "Готово к созданию персонального подключения.",
+    statusCopiedAgain: "VLESS-ссылки снова скопированы.",
+    statusCopyDenied: "Браузер не разрешил копирование. Разрешите доступ к буферу и нажмите ещё раз.",
+    statusCreating: "Создаём пользователя в Pasar Guard и импортируем подключения…",
+    statusReadyNotCopied: ({ count }) => `Подключение готово (${count}). Нажмите кнопку ещё раз, чтобы скопировать VLESS-ссылки.`,
+    statusCopied: ({ count }) => count === 1 ? "Готово: VLESS-ссылка скопирована." : `Готово: VLESS-ссылки скопированы (${count}).`,
+    statusGenericError: "Не удалось создать подключение. Повторите попытку.",
+    subscriptionDescription: ({ appName }) => `В Вашем буфере обмена уже сохранены подключения. Откройте ${appName}, нажмите «+» для добавления нового подключения и выберите «Импорт из буфера обмена». При необходимости Вы можете заново скопировать ссылки кнопкой «Инициализация» выше.`,
+    errors: {
+      public_initialization_rate_limited: "Слишком много новых подключений. Попробуйте ещё раз через час.",
+      pasarguard_unavailable: "Pasar Guard временно недоступен. Повторите попытку позже.",
+      pasarguard_subscription_contains_no_vless: "В полученной подписке нет VLESS-ссылок.",
+      no_vless_links: "Watcher не вернул VLESS-ссылки.",
+      invalid_vless_response: "Watcher вернул данные в неожиданном формате.",
+      secure_context_required: "Откройте страницу по защищённому HTTPS-адресу.",
+    },
+    platforms: {
+      ios: { appName: "Incy", description: "Для iPhone установите приложение Incy из App Store, затем откройте его и разрешите добавление VPN-конфигурации.", downloadLabel: "Скачать Incy для iPhone" },
+      android: { appName: "Happ", description: "Для Android установите приложение Happ из Google Play, затем откройте его и разрешите добавление VPN-конфигурации.", downloadLabel: "Скачать Happ для Android" },
+      windows: { appName: "Happ", description: "Для Windows скачайте Happ с официального сайта, установите приложение и откройте его для добавления подключения.", downloadLabel: "Скачать Happ для Windows" },
+    },
+  },
+  en: {
+    title: "Cake Project — initialize",
+    description: "Cake Project — fast and secure VLESS connections in one click.",
+    channel: "Secure channel",
+    cakeAria: "Launch the cake animation",
+    personalEyebrow: "Personal connection / 1",
+    heroTitle: "Fast and secure<br>proxy connection",
+    heroIntro: "Cake Project provides secure and stable VLESS connections. Initialization creates<br class=\"desktop-break\"> a personal connection for you and immediately copies it to your device's<br class=\"desktop-break\"> clipboard.",
+    initializeAreaAria: "Initialize connection",
+    initialize: "Initialize",
+    initializePending: "Creating connection…",
+    initializeRetry: "Retry initialization",
+    manualLabel: "VLESS links for manual copying",
+    manualHint: "If the browser blocks clipboard access, select the text and choose Copy.",
+    connection: "Connection",
+    paymentEyebrow: "Secure funding / 2",
+    paymentTitle: "Timely support for the project<br>keeps every connection<br>stable",
+    paymentIntro: "Cake Project is not a commercial project. Financial support from our users helps us<br class=\"desktop-break\"> maintain the network infrastructure and keep every connection<br class=\"desktop-break\"> operational.",
+    platformGroupAria: "Choose a platform",
+    stableEyebrow: "Stable connection / 3",
+    installTitle: "1. Install the app",
+    subscriptionTitle: "2. Add the subscription",
+    download: "Download",
+    languageAria: "Choose language",
+    statusReady: "Ready to create a personal connection.",
+    statusCopiedAgain: "VLESS links copied again.",
+    statusCopyDenied: "The browser blocked clipboard access. Allow access and try again.",
+    statusCreating: "Creating a Pasar Guard user and importing connections…",
+    statusReadyNotCopied: ({ count }) => `Connection ready (${count}). Click the button again to copy the VLESS links.`,
+    statusCopied: ({ count }) => count === 1 ? "Done: VLESS link copied." : `Done: VLESS links copied (${count}).`,
+    statusGenericError: "Could not create the connection. Please try again.",
+    subscriptionDescription: ({ appName }) => `Your connections are already saved to the clipboard. Open ${appName}, tap “+” to add a new connection, and choose “Import from clipboard”. If needed, use the Initialize button above to copy the links again.`,
+    errors: {
+      public_initialization_rate_limited: "Too many new connections. Please try again in an hour.",
+      pasarguard_unavailable: "Pasar Guard is temporarily unavailable. Please try again later.",
+      pasarguard_subscription_contains_no_vless: "The subscription contains no VLESS links.",
+      no_vless_links: "Watcher returned no VLESS links.",
+      invalid_vless_response: "Watcher returned data in an unexpected format.",
+      secure_context_required: "Open this page over a secure HTTPS connection.",
+    },
+    platforms: {
+      ios: { appName: "Incy", description: "For iPhone, install Incy from the App Store, open it, and allow the VPN configuration to be added.", downloadLabel: "Download Incy for iPhone" },
+      android: { appName: "Happ", description: "For Android, install Happ from Google Play, open it, and allow the VPN configuration to be added.", downloadLabel: "Download Happ for Android" },
+      windows: { appName: "Happ", description: "For Windows, download Happ from the official website, install it, and open it to add the connection.", downloadLabel: "Download Happ for Windows" },
+    },
+  },
+};
 
-const accessibleTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "long",
-  timeStyle: "medium",
-});
+const platformDownloadUrls = {
+  ios: "https://apps.apple.com/ru/app/incy/id6756943388",
+  android: "https://play.google.com/store/apps/details?id=com.happproxy",
+  windows: "https://happ.info/",
+};
+
+function translate(key, variables = {}) {
+  const value = key.split(".").reduce((result, part) => result?.[part], translations[currentLanguage]);
+  return typeof value === "function" ? value(variables) : value;
+}
+
+function detectedLanguage() {
+  try {
+    const saved = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    if (saved === "ru" || saved === "en") return saved;
+  } catch {
+    // Browser storage is optional; locale detection remains available.
+  }
+  const preferred = navigator.languages?.[0] || navigator.language || "en";
+  return preferred.toLowerCase().startsWith("ru") ? "ru" : "en";
+}
+
+function rebuildTimeFormatters() {
+  const locale = currentLanguage === "ru" ? "ru-RU" : "en-GB";
+  designTimeFormatter = new Intl.DateTimeFormat(locale, {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  accessibleTimeFormatter = new Intl.DateTimeFormat(locale, {
+    dateStyle: "long",
+    timeStyle: "medium",
+  });
+}
 
 function updateDesignTime() {
   const now = new Date();
@@ -41,7 +181,143 @@ function updateDesignTime() {
   designTime.setAttribute("aria-label", accessibleTimeFormatter.format(now));
 }
 
-updateDesignTime();
+function scrollToPage(page) {
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  window.clearTimeout(railTransitionTimer);
+  pageRail.classList.toggle("is-visible", page !== pageSections[0]);
+  railTransitionTimer = window.setTimeout(() => {
+    railTransitionTimer = 0;
+    updatePageRail();
+  }, 720);
+  page.scrollIntoView({
+    behavior: reduceMotion ? "auto" : "smooth",
+    block: "start",
+  });
+}
+
+function updatePageRail() {
+  if (railTransitionTimer) return;
+  const paymentOffset = Math.max(paymentPage.offsetTop, 1);
+  pageRail.classList.toggle("is-visible", window.scrollY >= paymentOffset / 2);
+}
+
+let railFrame = 0;
+function schedulePageRailUpdate() {
+  if (railFrame) return;
+  railFrame = window.requestAnimationFrame(() => {
+    railFrame = 0;
+    updatePageRail();
+  });
+}
+
+updatePageRail();
+window.addEventListener("scroll", schedulePageRailUpdate, { passive: true });
+window.addEventListener("resize", schedulePageRailUpdate);
+
+function nearestPageIndex() {
+  return pageSections.reduce((nearest, page, index) => {
+    const distance = Math.abs(page.getBoundingClientRect().top);
+    return distance < nearest.distance ? { index, distance } : nearest;
+  }, { index: 0, distance: Number.POSITIVE_INFINITY }).index;
+}
+
+function handleWheel(event) {
+  if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX) || Math.abs(event.deltaY) < 4) return;
+  if (event.target instanceof Element && event.target.closest("textarea, input, select")) return;
+
+  const direction = event.deltaY > 0 ? 1 : -1;
+  const currentIndex = nearestPageIndex();
+  const currentPage = pageSections[currentIndex];
+  const currentRect = currentPage.getBoundingClientRect();
+  const pageIsTallerThanViewport = currentPage.scrollHeight > window.innerHeight + 2;
+
+  const isFinalPage = currentIndex === pageSections.length - 1;
+  if (isFinalPage && pageIsTallerThanViewport && direction > 0 && currentRect.bottom > window.innerHeight + 2) return;
+  if (isFinalPage && pageIsTallerThanViewport && direction < 0 && currentRect.top < -2) return;
+
+  const targetIndex = Math.min(Math.max(currentIndex + direction, 0), pageSections.length - 1);
+  event.preventDefault();
+  if (wheelLocked || targetIndex === currentIndex) return;
+
+  wheelLocked = true;
+  window.clearTimeout(wheelUnlockTimer);
+  scrollToPage(pageSections[targetIndex]);
+  wheelUnlockTimer = window.setTimeout(() => {
+    wheelLocked = false;
+  }, 900);
+}
+
+window.addEventListener("wheel", handleWheel, { passive: false });
+
+function selectPlatform(platform) {
+  const settings = translations[currentLanguage].platforms[platform];
+  if (!settings) return;
+
+  currentPlatform = platform;
+  platformButtons.forEach((button) => {
+    const selected = button.dataset.platform === platform;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  platformDescription.textContent = settings.description;
+  subscriptionDescription.textContent = translate("subscriptionDescription", { appName: settings.appName });
+  downloadButton.href = platformDownloadUrls[platform];
+  downloadButton.setAttribute("aria-label", settings.downloadLabel);
+}
+
+function renderStatus() {
+  statusText.dataset.state = currentStatus.state;
+  statusText.textContent = translate(currentStatus.key, currentStatus.variables);
+}
+
+function setButtonLabel(key) {
+  currentButtonLabelKey = key;
+  buttonLabel.textContent = translate(key);
+}
+
+function applyLanguage(language, persist = false) {
+  currentLanguage = language === "ru" ? "ru" : "en";
+  document.documentElement.lang = currentLanguage;
+  document.title = translate("title");
+  descriptionMeta.setAttribute("content", translate("description"));
+
+  document.querySelectorAll("[data-i18n]").forEach((element) => {
+    element.textContent = translate(element.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-html]").forEach((element) => {
+    element.innerHTML = translate(element.dataset.i18nHtml);
+  });
+  document.querySelectorAll("[data-i18n-aria-label]").forEach((element) => {
+    element.setAttribute("aria-label", translate(element.dataset.i18nAriaLabel));
+  });
+  languageButtons.forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.language === currentLanguage));
+  });
+
+  rebuildTimeFormatters();
+  updateDesignTime();
+  setButtonLabel(currentButtonLabelKey);
+  renderStatus();
+  selectPlatform(currentPlatform);
+
+  if (persist) {
+    try {
+      localStorage.setItem(LANGUAGE_STORAGE_KEY, currentLanguage);
+    } catch {
+      // The switch still works for this page view without storage.
+    }
+  }
+}
+
+connectionButton.addEventListener("click", () => scrollToPage(appsPage));
+platformButtons.forEach((button) => {
+  button.addEventListener("click", () => selectPlatform(button.dataset.platform));
+});
+languageButtons.forEach((button) => {
+  button.addEventListener("click", () => applyLanguage(button.dataset.language, true));
+});
+
+applyLanguage(detectedLanguage());
 window.setInterval(updateDesignTime, 1000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) updateDesignTime();
@@ -146,9 +422,9 @@ function startCakeBurst() {
 cakeBurstButton.addEventListener("click", startCakeBurst);
 window.addEventListener("pagehide", finishCakeBurst);
 
-function setStatus(message, state = "") {
-  statusText.dataset.state = state;
-  statusText.textContent = message;
+function setStatus(key, state = "", variables = {}) {
+  currentStatus = { key, state, variables };
+  renderStatus();
 }
 
 function setManualFallback(text = "") {
@@ -251,16 +527,10 @@ async function copyText(text) {
   return legacyCopy(text);
 }
 
-function readableError(error) {
-  const messages = {
-    public_initialization_rate_limited: "Слишком много новых подключений. Попробуйте ещё раз через час.",
-    pasarguard_unavailable: "Pasar Guard временно недоступен. Повторите попытку позже.",
-    pasarguard_subscription_contains_no_vless: "В полученной подписке нет VLESS-ссылок.",
-    no_vless_links: "Watcher не вернул VLESS-ссылки.",
-    invalid_vless_response: "Watcher вернул данные в неожиданном формате.",
-    secure_context_required: "Откройте страницу по защищённому HTTPS-адресу.",
-  };
-  return messages[error.message] || "Не удалось создать подключение. Повторите попытку.";
+function readableErrorKey(error) {
+  return translations[currentLanguage].errors[error.message]
+    ? `errors.${error.message}`
+    : "statusGenericError";
 }
 
 async function handleInitialization() {
@@ -270,16 +540,17 @@ async function handleInitialization() {
     const copied = await copyText(cachedVlessText);
     setManualFallback(copied ? "" : cachedVlessText);
     setStatus(
-      copied ? "VLESS-ссылки снова скопированы." : "Браузер не разрешил копирование. Разрешите доступ к буферу и нажмите ещё раз.",
+      copied ? "statusCopiedAgain" : "statusCopyDenied",
       copied ? "success" : "error",
     );
+    if (copied) scrollToPage(paymentPage);
     return;
   }
 
   requestPending = true;
   initializeButton.disabled = true;
-  buttonLabel.textContent = "Создаём подключение…";
-  setStatus("Создаём пользователя в Pasar Guard и импортируем подключения…");
+  setButtonLabel("initializePending");
+  setStatus("statusCreating");
 
   let clipboardAttempt = null;
   try {
@@ -296,17 +567,17 @@ async function handleInitialization() {
     if (!copied) copied = await copyText(cachedVlessText);
     setManualFallback(copied ? "" : cachedVlessText);
 
-    buttonLabel.textContent = "Скопировать VLESS ещё раз";
+    setButtonLabel("initialize");
     setStatus(
-      copied
-        ? `Готово: ${result.count} VLESS-${result.count === 1 ? "ссылка скопирована" : "ссылок скопировано"}.`
-        : `Подключение готово (${result.count}). Нажмите кнопку ещё раз, чтобы скопировать VLESS-ссылки.`,
+      copied ? "statusCopied" : "statusReadyNotCopied",
       copied ? "success" : "error",
+      { count: result.count },
     );
+    if (copied) scrollToPage(paymentPage);
   } catch (error) {
     if (clipboardAttempt) await clipboardAttempt;
-    buttonLabel.textContent = "Повторить инициализацию";
-    setStatus(readableError(error), "error");
+    setButtonLabel("initializeRetry");
+    setStatus(readableErrorKey(error), "error");
   } finally {
     requestPending = false;
     initializeButton.disabled = false;
