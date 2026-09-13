@@ -226,7 +226,9 @@ install_service() {
   for image_key in LOKI_WATCHER_API_IMAGE LOKI_WATCHER_WEB_IMAGE LOKI_WATCHER_WORKER_IMAGE; do
     docker pull "$(env_value "$image_key")"
   done
-  compose up -d --no-build
+  # Remove the legacy embedded-nginx service left by releases that predate the
+  # host-nginx layout.
+  compose up -d --no-build --remove-orphans
   if ! wait_for_health; then
     compose ps >&2 || true
     compose logs --no-color --tail 100 api web worker backup >&2 || true

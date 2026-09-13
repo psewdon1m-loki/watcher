@@ -149,10 +149,11 @@ is scanned again before GitHub Release upload.
 
 The production Compose contract publishes API and web only on loopback; normal
 containers run non-root with read-only roots, no added capabilities and
-`no-new-privileges`. The host nginx template enforces the configured Host/SNI,
-overwrites client-supplied forwarding headers, applies request/connection rate
-limits and timeouts, disables subscription-path access logs, and emits HSTS,
-CSP, frame, MIME and referrer protections.
+`no-new-privileges`. The server-owned nginx `loki` site enforces Host/SNI, TLS
+and any edge request/connection limits. Watcher's server include overwrites
+client-supplied forwarding headers, applies bounded timeouts, disables
+subscription-path access logs, and emits HSTS, frame, MIME and referrer
+protections.
 
 Dashboard credentials are compared in constant time after PBKDF2 verification,
 wrong usernames take a dummy PBKDF2 path, and ten failures in 60 seconds block

@@ -44,6 +44,7 @@ const state = {
   activeView: "dashboard",
   connections: [],
   clients: [],
+  status: null,
   analyticsReports: [],
   analyticsHasMore: false,
   analyticsNextBeforeId: null,
@@ -101,6 +102,10 @@ function formatBytes(value) {
     unit += 1;
   }
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatTrafficLimit(value) {
+  return Number(value || 0) > 0 ? formatBytes(value) : "Unlimited";
 }
 
 function formatPercent(value) {
@@ -331,8 +336,153 @@ function metricCard(metric) {
   return `<article class="metric-card" draggable="true" tabindex="0" data-metric="${escapeHtml(metric.key)}"><span class="metric-label">${escapeHtml(metric.label)}</span><strong class="metric-value">${escapeHtml(metric.value)}</strong>${meta}</article>`;
 }
 
+function statusText(value) {
+  return {
+    operational: "Работает",
+    degraded: "С ограничениями",
+    partial_outage: "Частично недоступно",
+    major_outage: "Недоступно",
+    unknown: "Нет данных",
+  }[value] || "Нет данных";
+}
+
+function statusReasonText(value) {
+  return {
+    watcher_reachable: "Watcher API отвечает",
+    endpoint_reachable: "DNS и TCP-подключение работают",
+    endpoint_unreachable: "Узел не принимает TCP-подключение",
+    dns_failed: "Не удалось разрешить имя узла",
+    configuration_missing: "Выбранная конфигурация больше не существует",
+    not_checked: "Проверка ещё не выполнялась",
+    status_stale: "Результат проверки устарел",
+    pasarguard_ready: "PasarGuard и шаблон доступны",
+    pasarguard_unavailable: "PasarGuard временно недоступен",
+    subscription_available: "Публичная подписка доступна",
+    subscription_unavailable: "Публичную подписку получить не удалось",
+    subscription_refresh_degraded: "Часть источников подписок не обновляется",
+    subscription_canary_missing: "Нет подключения для контрольной подписки",
+    subscription_contains_no_vless: "Подписка не содержит VLESS-конфигураций",
+    check_failed: "Проверка завершилась с внутренней ошибкой",
+  }[value] || value || "Ожидается проверка";
+}
+
+function statusTag(value) {
+  return `<span class="service-status-tag ${escapeAttribute(value || "unknown")}">${escapeHtml(statusText(value))}</span>`;
+}
+
+function statusComponentRow(component) {
+  const details = Array.isArray(component.details) ? component.details : [];
+  const checked = component.checkedAt ? `Проверено ${formatDate(component.checkedAt)}` : "Проверка ещё не выполнялась";
+  return `<article class="service-status-row">
+    <div class="service-status-main"><strong>${escapeHtml(component.title)}</strong><span>${escapeHtml(checked)}</span></div>
+    ${statusTag(component.status)}
+    ${details.length ? `<div class="service-status-details">${details.map((item) => `
+      <div class="service-status-detail">
+        <span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.endpoint || statusReasonText(item.reasonCode))}</small></span>
+        <span><small>${escapeHtml(statusReasonText(item.reasonCode))}${item.latencyMs !== null && item.latencyMs !== undefined ? ` · ${escapeHtml(item.latencyMs)} ms` : ""}</small>${statusTag(item.status)}</span>
+      </div>`).join("")}</div>` : ""}
+  </article>`;
+}
+
+function dashboardStatusMarkup(data) {
+  const components = Array.isArray(data.components) ? data.components : [];
+  return `
+    <div class="workspace-toolbar status-toolbar">
+      <span class="toolbar-title">Состояние сервисов</span>
+      ${statusTag(data.overallStatus)}
+      <span class="muted">${data.checkedAt ? `Обновлено ${escapeHtml(formatDate(data.checkedAt))}` : "Ожидается первая проверка"}</span>
+      <div class="toolbar-actions">
+        <button id="openPublicStatus" type="button">Публичная страница</button>
+        <button id="configureStatusTargets" type="button">Выбрать подключения</button>
+        <button id="runStatusCheck" class="accent-action" type="button">Проверить сейчас</button>
+      </div>
+    </div>
+    <div class="service-status-list">${components.map(statusComponentRow).join("")}</div>`;
+}
+
+async function refreshDashboardStatus() {
+  if (state.activeView !== "dashboard") return;
+  const data = await apiJson("/api/v1/status");
+  state.status = data;
+  const panel = document.querySelector("#dashboardStatusPanel");
+  if (!panel) return;
+  panel.innerHTML = dashboardStatusMarkup(data);
+  bindDashboardStatusActions();
+  applySmartHover(panel);
+}
+
+function openStatusTargetDialog() {
+  const data = state.status || {};
+  const selected = new Set(data.selectedConfigurationKeys || []);
+  const available = Array.isArray(data.availableConfigurations) ? data.availableConfigurations : [];
+  openDialog("Мониторинг VLESS-подключений", `
+    <form id="statusTargetsForm" class="dialog-form">
+      <p class="muted">Выберите VLESS-конфигурации, чью сетевую доступность Watcher будет проверять автоматически. Публичная страница покажет только название из части после <code>#</code> и состояние — без адресов и идентификаторов.</p>
+      <div class="status-target-list">${available.map((item) => `
+        <label class="status-target-option">
+          <input type="checkbox" name="configurationKey" value="${escapeAttribute(item.configurationKey)}" ${selected.has(item.configurationKey) ? "checked" : ""}>
+          <span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.connectionId)} · ${escapeHtml(item.endpoint)} · ${escapeHtml(item.transport)}/${escapeHtml(item.security)}</small></span>
+        </label>`).join("") || `<p class="empty-state">В активных подключениях нет валидных VLESS-конфигураций.</p>`}</div>
+      <div class="dialog-actions"><button class="accent-action" type="submit">Сохранить и проверить</button><button id="cancelStatusTargets" type="button">Отмена</button></div>
+    </form>`);
+  document.querySelector("#cancelStatusTargets").addEventListener("click", () => closeDialog());
+  document.querySelector("#statusTargetsForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = event.currentTarget.querySelector("button[type=submit]");
+    submit.disabled = true;
+    submit.textContent = "Сохраняем...";
+    const keys = [...event.currentTarget.querySelectorAll('input[name="configurationKey"]:checked')].map((input) => input.value);
+    try {
+      await apiJson("/api/v1/status/targets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ configurationKeys: keys }),
+      });
+      submit.textContent = "Проверяем...";
+      try {
+        await apiJson("/api/v1/status/check", { method: "POST" });
+      } catch (error) {
+        if (error.message !== "status_check_in_progress") throw error;
+      }
+      closeDialog();
+      await refreshDashboardStatus();
+      showNotice("Список проверяемых подключений сохранён", "success");
+    } catch (error) {
+      submit.disabled = false;
+      submit.textContent = "Сохранить и проверить";
+      showNotice(`Настройки статуса не сохранены: ${error.message}`, "error");
+    }
+  });
+}
+
+function bindDashboardStatusActions() {
+  document.querySelector("#openPublicStatus")?.addEventListener("click", () => window.open("https://statuscake.shmoza.net/", "_blank", "noopener,noreferrer"));
+  document.querySelector("#configureStatusTargets")?.addEventListener("click", openStatusTargetDialog);
+  document.querySelector("#runStatusCheck")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Проверяем...";
+    try {
+      const data = await apiJson("/api/v1/status/check", { method: "POST" });
+      state.status = data;
+      const panel = document.querySelector("#dashboardStatusPanel");
+      if (panel) panel.innerHTML = dashboardStatusMarkup(data);
+      bindDashboardStatusActions();
+      showNotice("Проверка состояния завершена", "success");
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Проверить сейчас";
+      showNotice(`Проверка не выполнена: ${error.message}`, "error");
+    }
+  });
+}
+
 async function loadDashboardView() {
-  const data = await apiJson("/api/v1/dashboard");
+  const [data, statusData] = await Promise.all([
+    apiJson("/api/v1/dashboard"),
+    apiJson("/api/v1/status"),
+  ]);
+  state.status = statusData;
   const system = data.system || {};
   const ram = system.ram || {};
   const disk = system.disk || {};
@@ -346,10 +496,12 @@ async function loadDashboardView() {
   ], STORAGE.metrics, ["cpu", "ram", "disk", "clients", "connections", "traffic"]);
   viewRoot.innerHTML = `
     <section class="outer-workspace">
+      <div id="dashboardStatusPanel">${dashboardStatusMarkup(statusData)}</div>
       <div class="workspace-toolbar"><span class="toolbar-title">System metrics</span><span class="muted">Drag metrics to change their order</span></div>
       <div class="workspace-content"><div id="metricGrid" class="metric-grid">${metrics.map(metricCard).join("")}</div></div>
     </section>
   `;
+  bindDashboardStatusActions();
   setupMetricReordering();
 }
 
@@ -407,6 +559,10 @@ function issuedConnectionCard(item) {
           ${property("Sources", sourceSummary)}
           ${property("PasarGuard user ID", pasarSource?.external_user_id)}
           ${property("PasarGuard username", pasarSource?.external_username)}
+          ${pasarSource ? property("PasarGuard traffic · current cycle", formatBytes(item.used_traffic_bytes)) : ""}
+          ${pasarSource ? property("PasarGuard traffic · lifetime", formatBytes(item.lifetime_used_traffic_bytes)) : ""}
+          ${pasarSource ? property("PasarGuard data limit", formatTrafficLimit(item.data_limit_bytes)) : ""}
+          ${pasarSource ? property("Traffic updated", formatDate(item.traffic_updated_at)) : ""}
           ${property("Revision", item.revision)}
           ${property("Provisioning", item.provisioning_state || "active")}
           ${property("Provider error", item.provider_error)}
@@ -752,14 +908,20 @@ function bindIssuedConnectionActions() {
   }));
   viewRoot.querySelectorAll("[data-delete-connection]").forEach((button) => button.addEventListener("click", async () => {
     const id = decodeURIComponent(button.dataset.deleteConnection);
+    const connection = state.connections.find((item) => item.id === id);
+    const hasPasarGuardUser = connection?.sources?.some(
+      (source) => source.provider === "pasarguard" && source.external_user_id,
+    );
     const confirmed = await confirmAction({
       title: "Delete issued connection",
-      copy: `<p><strong>${escapeHtml(id)}</strong> will be removed from Watcher globally.</p><p>The external subscription and servers remain installed and are not modified. No client identity is deny-listed. This cannot be reversed unless restored from a backup.</p>`,
+      copy: hasPasarGuardUser
+        ? `<p><strong>${escapeHtml(id)}</strong> will be removed from Watcher globally together with its managed PasarGuard user.</p><p>The PasarGuard subscription will stop working immediately. This cannot be reversed unless the connection is recreated.</p>`
+        : `<p><strong>${escapeHtml(id)}</strong> will be removed from Watcher globally.</p><p>No PasarGuard user is linked to this connection. This cannot be reversed unless restored from a backup.</p>`,
     });
     if (!confirmed) return;
     try {
-      await apiJson(`/api/v1/connections/${encodeURIComponent(id)}`, { method: "DELETE" });
-      showNotice("Issued connection deleted", "success");
+      const result = await apiJson(`/api/v1/connections/${encodeURIComponent(id)}`, { method: "DELETE" });
+      showNotice(result.pasarguardUserDeleted ? "Connection and PasarGuard user deleted" : "Issued connection deleted", "success");
       await loadConnectionsView();
       applySmartHover(viewRoot);
     } catch (error) {
@@ -1193,15 +1355,25 @@ async function startServerUpdate(event) {
   const version = form.elements.version.value.trim();
   const confirmed = await confirmAction({
     title: "Install Watcher server update",
-    copy: `<p>Install exact stable version <strong>${escapeHtml(version)}</strong>?</p><p>The privileged daemon will create and persist an encrypted backup before release resolution, pull immutable images, replace the registered Watcher project and roll runtime plus data back if health fails. The dashboard may be temporarily unavailable while containers are replaced.</p>`,
+    copy: `<p>Install exact stable version <strong>${escapeHtml(version)}</strong>?</p><p>Before the update starts, an encrypted recovery backup will be downloaded to this device. The privileged daemon also persists its own rollback copy, then pulls immutable images and replaces the registered Watcher project. The dashboard may be temporarily unavailable while containers are replaced.</p>`,
     confirmLabel: "Install update",
   });
   if (!confirmed) return;
   const button = form.querySelector("button[type=submit]");
   button.disabled = true;
-  button.textContent = "Submitting...";
+  button.textContent = "Preparing backup...";
   const requestId = `web-${crypto.randomUUID()}`;
   try {
+    const backupDownloaded = await downloadFile(
+      "/api/v1/backups/download",
+      `loki-watcher-pre-update-${version}.zip`,
+      "Pre-update backup downloaded",
+    );
+    if (!backupDownloaded) {
+      button.disabled = false;
+      return;
+    }
+    button.textContent = "Submitting...";
     const result = await apiJson("/api/v1/server-updates/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1267,15 +1439,18 @@ async function downloadFile(path, fallbackName, successMessage, button = null) {
     const disposition = response.headers.get("content-disposition") || "";
     const match = disposition.match(/filename="([^"]+)"/i);
     const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
+    const objectUrl = URL.createObjectURL(blob);
+    link.href = objectUrl;
     link.download = match ? match[1] : fallbackName;
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(link.href);
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     showNotice(successMessage, "success");
+    return true;
   } catch (error) {
     showNotice(`${successMessage} failed: ${error.message}`, "error");
+    return false;
   } finally {
     if (button) { button.disabled = false; button.textContent = original; }
   }
@@ -1310,6 +1485,7 @@ const documentationSections = [
   { id: "analytics-guide", title: "Analytics reports", body: `<p>Analytics stores two client-generated JSON report types: <strong>Fail analytics</strong> for failed background connection checks and <strong>Full analytics</strong> for the scheduled normal Traffic Lab pipeline.</p><ul><li>Use the Analytics menu under Clients to filter reports by type or client, inspect the retained JSON and download one report.</li><li>Reports are accepted through the signed <code>POST /api/v1/analytics/batch</code> endpoint. The client removes a local outbox item only after its report ID is acknowledged.</li><li>Dashboard reads use <code>GET /api/v1/analytics</code> and <code>GET /api/v1/analytics/{reportId}</code>.</li><li>Retention uses the strictest of the configured 30-day default and global byte cap.</li></ul><div class="doc-note">Heartbeat is intentionally excluded from Analytics. Online/offline state remains on the client card in Clients.</div>` },
   { id: "overview", title: "Overview and boundaries", body: `<p>Cake Proxy Watcher is the operator control plane for Windows and Android client enrollment, telemetry, issued subscription records, update metadata, mutable key/value records and recovery.</p><ul><li>The API stores operational state in SQLite.</li><li>The web container serves the dashboard; a separately managed production reverse proxy routes dashboard and API traffic.</li><li>The worker applies retention rules; the backup service creates periodic snapshots.</li></ul><div class="doc-note">Watcher is not in the client traffic path. An enrolled client and its already installed proxy configuration keep working if the API, dashboard or subscription scanner is unavailable. Reports and commands resume when Watcher returns.</div>` },
   { id: "quick-start", title: "Quick start", body: `<p>Open the dashboard address, enter the operator username and password, then use the left menu. Dashboard is the system summary; Connections contains stable client-facing subscriptions and their sources; Clients contains enrolled installations; Register contains mutable values; Settings contains appearance, password, connection scan interval, backups and logs.</p><h3>Navigation</h3><ul><li>Drag main menu items to save their order in this browser.</li><li>Use Documentation and Log out at the bottom of the sidebar.</li><li>The refresh action reloads only the current view.</li></ul>` },
+  { id: "service-status", title: "Service status", body: `<p>The Dashboard service-status panel monitors selected VLESS endpoints, readiness for new PasarGuard-backed connections and delivery of a stable Watcher subscription. Choose monitored configurations in the panel, then run an immediate check or wait for the scheduled one.</p><ul><li>Endpoint checks validate the URI and test DNS/TCP reachability. They do not send user traffic through VLESS.</li><li>Public labels come only from the URI fragment after <code>#</code>. Public responses never include endpoints, connection IDs, UUIDs or subscription tokens.</li><li>The independent customer-facing page is available at <a href="https://statuscake.shmoza.net/" target="_blank" rel="noreferrer">statuscake.shmoza.net</a>. Watcher synchronizes only selected host, port, label and an opaque key; the status service continues DNS/TCP checks if Watcher is unavailable.</li></ul>` },
   { id: "dashboard-guide", title: "Dashboard metrics", body: `<p>Dashboard reports API-host CPU load, RAM and disk utilization, activated client count, issued connection count and cumulative connected-device network activity reported by clients.</p><ul><li>Activated clients are unique enrolled client identities.</li><li>The online window is derived from the heartbeat interval in Register with retry tolerance.</li><li>Traffic is total activity across active device adapters while the client reports connected; it is not an exact Xray or proxy byte counter.</li><li>Issued connections are rows in the Watcher connection register.</li><li>Drag metric cards to save a browser-specific order.</li></ul>` },
   { id: "connections-guide", title: "Connections, PasarGuard and scheduled refresh", body: `<p>A connection has a permanent ID, creation and update timestamps, one opaque Cake Proxy subscription URL and one or more sources. Its origin is derived as <code>https://&lt;watcher.public_sni&gt;</code>. There is no manual/PasarGuard connection type split. Direct VLESS URIs can always be pasted while editing a connection; integrations are added from “Set new connection”.</p><h3>PasarGuard workflow</h3><ol><li>Configure <code>pasarguard.base_url</code>, <code>pasarguard.user_template_id</code> and the write-only <code>pasarguard.api_key</code> in Register.</li><li>Create a connection, open its card and select Set new connection → PasarGuard.</li><li>Watcher calls the registered machine interface, creates the upstream user with the permanent ID and caches its returned links.</li><li>Give consumers the Cake Proxy URL, not the upstream URL. Reset rotates upstream credentials while preserving the permanent ID and Cake Proxy URL.</li></ol><h3>Refresh</h3><p>Watcher refreshes and aggregates every active source at least once every 15 minutes. “Check all sources” performs the same operation immediately. If a source is unavailable, its last working values remain available and the connection is marked degraded.</p><div class="doc-note">The Cake Proxy URL is a machine subscription endpoint: it returns Base64 by default and one URI per line with <code>?format=raw</code>. Treat the opaque token as a secret.</div>` },
   { id: "clients-guide", title: "Clients, enrollment and offline behavior", body: `<p>A client creates a random 32-byte secret and sends a signed enrollment request containing its client ID, display ID and device inventory. The server accepts the first enrollment and will not replace an existing secret with a different one. Later telemetry, command polling and update-state reports use HMAC-SHA256 signatures over method, path, timestamp and body hash.</p><h3>Client card</h3><ul><li>The platform is reported as Windows or Android. Every heartbeat refreshes the device/app version, proxy state, routing, sanitized connection inventory, log consent and connected-device network counter.</li><li>Original IP is the first enrollment address; Last IP, region and provider describe the latest authenticated client contact.</li><li>Proxy state and inventory are the latest reported snapshot. The separate online badge is based on Last seen and the Register heartbeat interval.</li><li>Load event stream reads retained telemetry; Collect now and Check updates enqueue commands.</li><li>Deleting a card removes server-side events and commands. It does not uninstall, revoke or block the client application; the client can enroll again after its server record is removed.</li></ul><h3>When Watcher is down</h3><p>The client continues its local proxy lifecycle. Telemetry is retried through its bounded local queue and commands wait until communication is restored, preventing Watcher downtime from becoming a connectivity outage.</p>` },
@@ -1320,8 +1496,8 @@ const documentationSections = [
   { id: "privacy-retention", title: "Privacy and retention", body: `<p>Watcher collects operational data required for fleet support: client/display identifiers, client-generated authentication secret, device and app metadata, reported connection status and sanitized connection inventory, cumulative/delta traffic counters, timestamps, source address with derived region/provider, update state and bounded event payloads.</p><ul><li>Core telemetry and optional log payloads are retained for 30 days by default; one batch is limited to 200 events and one stored event to 64 KiB.</li><li>Administrative audit data is limited by age, entry count and total encoded size; the strictest limit wins.</li><li>Client records, issued subscriptions and Register values remain until an operator deletes or restores them.</li><li>Subscription URLs/tokens and enrollment secrets exist in the live database but are centrally redacted from logs. In backup archives they exist only inside AES-GCM ciphertext.</li><li>Password replacements are stored only as salted PBKDF2 hashes. Neither <code>.env</code> nor the external backup key is included in backups.</li></ul><div class="doc-note">A deployment operator is responsible for TLS termination, recovery-key escrow, restricted backup access and an appropriate public privacy notice.</div>` },
   { id: "backup-recovery", title: "Backup and recovery", body: `<p>Manual and scheduled backups use the same format-v2 recovery contract: manifest.json, encrypted data/watcher.db.enc and README.txt. AES-256-GCM protects state; manifest HMAC, per-member SHA-256, uncompressed size and table record counts are verified before mutation.</p><ul><li>Compressed, uncompressed, per-member, member-count, duplicate-name, traversal, link and compression-ratio limits are enforced.</li><li>Restore is complete replacement. It validates schema, SQLite integrity, foreign keys and all record counts first, then creates and verifies a fresh encrypted pre-restore snapshot.</li><li>SQLite backup applies the staged database transactionally. Failure or failed health invariants restores the pre-restore database.</li><li>The external <code>LOKI_WATCHER_BACKUP_ENCRYPTION_KEY</code> is required in disaster recovery and is never stored in the archive.</li><li>Scheduled archives are bounded by 30 days, the newest 20 files and a 2 GiB directory budget.</li></ul>` },
   { id: "pasarguard-api", title: "PasarGuard and public subscription API", body: `<div class="doc-table-wrap"><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody><tr><td>GET</td><td><code>/sub/{opaque-token}</code></td><td>Stable Base64 machine subscription. <code>?format=raw</code> returns one inner URI per line; <code>?format=json</code> returns the Loki client metadata and configurations.</td></tr><tr><td>POST</td><td><code>/api/v1/client/connections/initialize</code></td><td>Signed and idempotent client initialization: allocate a connection, provision PasarGuard and return the stable subscription URL.</td></tr><tr><td>POST</td><td><code>/api/v1/connections/{id}/pasarguard/provision</code></td><td>Add or refresh the PasarGuard source for an existing connection.</td></tr><tr><td>POST</td><td><code>/api/v1/connections/{id}/pasarguard/reset</code></td><td>Rotate upstream credentials while preserving the Watcher identity and URL.</td></tr><tr><td>POST</td><td><code>/api/v1/connections/{id}/scan</code></td><td>Refresh and aggregate every active source while retaining last-good data on failure.</td></tr></tbody></table></div><p>Dashboard operations use operator authentication. Client initialization uses the enrolled client's HMAC identity. Watcher sends the PasarGuard API key only to the exact registered origin. Public subscription tokens are bearer credentials.</p>` },
-  { id: "api-reference", title: "API reference", body: `<div class="doc-table-wrap"><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody><tr><td>GET</td><td><code>/health</code></td><td>Service health without dashboard authentication.</td></tr><tr><td>GET</td><td><code>/api/v1/dashboard</code></td><td>Host and fleet metrics.</td></tr><tr><td>GET</td><td><code>/api/v1/clients[/id]</code></td><td>Client list or detail and retained events.</td></tr><tr><td>POST</td><td><code>/api/v1/enroll</code></td><td>Signed client enrollment and current Register-driven contact interval.</td></tr><tr><td>POST</td><td><code>/api/v1/client/connections/initialize</code></td><td>Signed, idempotent managed-connection creation for an enrolled client.</td></tr><tr><td>POST</td><td><code>/api/v1/telemetry/batch</code></td><td>Signed client telemetry batch.</td></tr><tr><td>GET/POST</td><td><code>/api/v1/commands/id</code></td><td>Signed client polling or operator command creation.</td></tr><tr><td>GET/POST/PUT/DELETE</td><td><code>/api/v1/connections</code></td><td>Connection CRUD; direct VLESS values are part of the base connection.</td></tr><tr><td>GET/POST/PUT/DELETE</td><td><code>/api/v1/register</code></td><td>Key/value Register CRUD.</td></tr><tr><td>GET</td><td><code>/api/v1/settings</code></td><td>Safe dashboard settings snapshot.</td></tr><tr><td>GET/POST</td><td><code>/api/v1/server-updates/check|jobs</code></td><td>Informational release discovery and exact-version handoff to the host updater.</td></tr><tr><td>GET</td><td><code>/api/v1/updater/policy</code></td><td>Local-control-token-only checksummed repository policy for the registered updater.</td></tr><tr><td>PUT</td><td><code>/api/v1/settings/connections</code></td><td>Save the mandatory 1–15 minute scan interval.</td></tr><tr><td>POST</td><td><code>/api/v1/settings/password</code></td><td>Change operator password.</td></tr><tr><td>GET/POST</td><td><code>/api/v1/backups/download|upload</code></td><td>Download or restore database backup.</td></tr><tr><td>GET</td><td><code>/api/v1/audit</code></td><td>Administrative audit stream.</td></tr></tbody></table></div><p>Dashboard routes use HTTP Basic authentication. Client routes use timestamped HMAC signatures and reject requests outside the allowed clock-skew window. The private updater policy route requires the local service token and is intended only for the registered loopback updater.</p>` },
-  { id: "deployment-guide", title: "Bootstrap and deployment", body: `<p>Production uses one immutable-revision HTTPS bootstrap command. It asks for the operator username, hidden password and public SNI (or accepts their environment variables for automation), installs supported prerequisites, creates the protected configuration, starts the exact release and waits for health.</p><ul><li>Bootstrap selects the highest stable non-draft semantic release, validates manifest role/tag/version, allow-listed hosts, bundle size/SHA-256 and safe archive paths, and refuses to overwrite an existing install.</li><li>Prepare generates recovery and local-control secrets without printing them and writes mode-0600 configuration.</li><li>Install rejects placeholders, weak passwords, non-HTTPS public URLs, invalid ports and mutable images; it installs/health-checks the restricted root updater service, registers Watcher with its own token, validates Compose, pulls exact digests, starts detached and gates success on bounded loopback health.</li><li>Containers run as non-root, drop all capabilities, set no-new-privileges, use read-only root filesystems/tmpfs and bind application ports to loopback. Production nginx remains host-managed and must pass a separate certificate/HTTPS health check.</li><li>For source development, use <code>docker compose up -d --build</code>. Foreground <code>docker compose up</code> intentionally remains attached. A Windows source stack intentionally reports the Linux host updater as unavailable.</li></ul>` },
+  { id: "api-reference", title: "API reference", body: `<div class="doc-table-wrap"><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody><tr><td>GET</td><td><code>/health</code></td><td>Service health without dashboard authentication.</td></tr><tr><td>GET</td><td><code>/api/v1/dashboard</code></td><td>Host and fleet metrics.</td></tr><tr><td>GET</td><td><code>/api/v1/status</code></td><td>Authenticated status, probe details and selectable VLESS configurations.</td></tr><tr><td>GET</td><td><code>/api/v1/public/status</code></td><td>Sanitized public service status used by <code>/status/</code>.</td></tr><tr><td>POST/PUT</td><td><code>/api/v1/status/check|targets</code></td><td>Run checks or select monitored configurations.</td></tr><tr><td>GET</td><td><code>/api/v1/clients[/id]</code></td><td>Client list or detail and retained events.</td></tr><tr><td>POST</td><td><code>/api/v1/enroll</code></td><td>Signed client enrollment and current Register-driven contact interval.</td></tr><tr><td>POST</td><td><code>/api/v1/client/connections/initialize</code></td><td>Signed, idempotent managed-connection creation for an enrolled client.</td></tr><tr><td>POST</td><td><code>/api/v1/telemetry/batch</code></td><td>Signed client telemetry batch.</td></tr><tr><td>GET/POST</td><td><code>/api/v1/commands/id</code></td><td>Signed client polling or operator command creation.</td></tr><tr><td>GET/POST/PUT/DELETE</td><td><code>/api/v1/connections</code></td><td>Connection CRUD; direct VLESS values are part of the base connection.</td></tr><tr><td>GET/POST/PUT/DELETE</td><td><code>/api/v1/register</code></td><td>Key/value Register CRUD.</td></tr><tr><td>GET</td><td><code>/api/v1/settings</code></td><td>Safe dashboard settings snapshot.</td></tr><tr><td>GET/POST</td><td><code>/api/v1/server-updates/check|jobs</code></td><td>Informational release discovery and exact-version handoff to the host updater.</td></tr><tr><td>GET</td><td><code>/api/v1/updater/policy</code></td><td>Local-control-token-only checksummed repository policy for the registered updater.</td></tr><tr><td>PUT</td><td><code>/api/v1/settings/connections</code></td><td>Save the mandatory 1–15 minute scan interval.</td></tr><tr><td>POST</td><td><code>/api/v1/settings/password</code></td><td>Change operator password.</td></tr><tr><td>GET/POST</td><td><code>/api/v1/backups/download|upload</code></td><td>Download or restore database backup.</td></tr><tr><td>GET</td><td><code>/api/v1/audit</code></td><td>Administrative audit stream.</td></tr></tbody></table></div><p>Dashboard routes use HTTP Basic authentication. Client routes use timestamped HMAC signatures and reject requests outside the allowed clock-skew window. The private updater policy route requires the local service token and is intended only for the registered loopback updater.</p>` },
+  { id: "deployment-guide", title: "Bootstrap and deployment", body: `<p>Production uses one immutable-revision HTTPS bootstrap command. It asks for the operator username, hidden password and public SNI (or accepts their environment variables for automation), installs supported prerequisites, creates the protected configuration, starts the exact release and waits for health.</p><ul><li>Bootstrap selects the highest stable non-draft semantic release, validates manifest role/tag/version, allow-listed hosts, bundle size/SHA-256 and safe archive paths, and refuses to overwrite an existing install.</li><li>Prepare generates recovery and local-control secrets without printing them and writes mode-0600 configuration.</li><li>Install rejects placeholders, weak passwords, non-HTTPS public URLs, invalid ports and mutable images; it installs/health-checks the restricted root updater service, registers Watcher with its own token, validates Compose, pulls exact digests, starts detached and gates success on bounded loopback health.</li><li>Containers run as non-root, drop all capabilities, set no-new-privileges, use read-only root filesystems/tmpfs and bind application ports to loopback. Production nginx uses the server-owned <code>/etc/nginx/sites-available/loki</code> configuration and must pass a separate certificate/HTTPS health check.</li><li>For source development, use <code>docker compose up -d --build --remove-orphans</code>. Foreground <code>docker compose up</code> intentionally remains attached. A Windows source stack intentionally reports the Linux host updater as unavailable.</li></ul>` },
   { id: "troubleshooting", title: "Troubleshooting", body: `<h3>Login button or authentication</h3><p>Verify API health, use the configured username/password and reload after a deployment so the browser receives the latest JavaScript. After password change, the current dashboard session switches to the new credential automatically.</p><h3>Subscription has too few inner connections</h3><p>Run a manual rescan, inspect Last scan and Scan result, then confirm the response contains supported URI schemes. Base64 padding and JSON nesting are handled automatically. A TLS error applies only when verification is enabled for that row.</p><h3>Client appears offline</h3><p>Check the client's clock, HMAC secret continuity and API reachability. Already configured proxy traffic can still work while telemetry is offline.</p><h3>Stack seems stuck after startup</h3><p>If the terminal shows “Attaching to …”, Compose is running in foreground mode, not hung. Use <code>docker compose up -d</code> for detached operation.</p>` },
 ];
 
@@ -1446,3 +1622,6 @@ updateLoginButton();
 showLogin();
 checkAvailability();
 window.setInterval(checkAvailability, 5000);
+window.setInterval(() => {
+  refreshDashboardStatus().catch(() => {});
+}, 30000);

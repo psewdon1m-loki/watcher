@@ -557,6 +557,143 @@ body.sidebar-fixed .main-content {
   text-align: right;
 }
 
+/* Service status */
+
+.status-toolbar {
+  flex-wrap: wrap;
+}
+
+.service-status-tag {
+  display: inline-flex;
+  min-width: 112px;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.service-status-tag.operational {
+  border-color: color-mix(in srgb, var(--success) 65%, transparent);
+  color: var(--success);
+}
+
+.service-status-tag.degraded,
+.service-status-tag.partial_outage {
+  border-color: color-mix(in srgb, #ffbf47 70%, transparent);
+  color: #ffbf47;
+}
+
+.service-status-tag.major_outage {
+  border-color: color-mix(in srgb, var(--danger) 70%, transparent);
+  color: var(--danger);
+}
+
+.service-status-list {
+  display: grid;
+}
+
+.service-status-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid var(--line-mid);
+  padding: 14px 18px;
+}
+
+.service-status-main {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.service-status-main strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.service-status-main span,
+.service-status-detail small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.service-status-details {
+  display: grid;
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--line);
+}
+
+.service-status-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0;
+}
+
+.service-status-detail + .service-status-detail {
+  border-top: 1px solid color-mix(in srgb, var(--light) 18%, transparent);
+}
+
+.service-status-detail > span {
+  display: grid;
+  gap: 4px;
+}
+
+.service-status-detail > span:last-child {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  text-align: right;
+}
+
+.status-target-list {
+  display: grid;
+  max-height: 52vh;
+  overflow: auto;
+  border: 1px solid var(--line-mid);
+}
+
+.status-target-option {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.status-target-option + .status-target-option {
+  border-top: 1px solid var(--line);
+}
+
+.status-target-option:hover {
+  background: var(--surface);
+}
+
+.status-target-option input {
+  width: 18px;
+  min-height: 18px;
+  accent-color: var(--accent);
+}
+
+.status-target-option span {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.status-target-option small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+
 /* Connections and clients */
 
 .entity-list {
@@ -1294,6 +1431,14 @@ input[type="color"] {
 
   .documentation-workspace {
     grid-template-columns: 1fr;
+  }
+
+  .service-status-detail {
+    grid-template-columns: 1fr;
+  }
+
+  .service-status-detail > span:last-child {
+    text-align: left;
   }
 
   .documentation-nav {

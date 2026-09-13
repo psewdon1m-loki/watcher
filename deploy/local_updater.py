@@ -543,7 +543,7 @@ def main() -> int:
                         os.replace(pending, os.path.join(install_dir, name))
                 replace_env_file(staged_env, env_path)
                 values = validate(env_path)
-                run(compose_command(compose_path, env_path, "up", "-d", "--no-build"), timeout=300)
+                run(compose_command(compose_path, env_path, "up", "-d", "--no-build", "--remove-orphans"), timeout=300)
                 job.transition("HEALTH_CHECK", "Polling loopback health after service replacement.")
                 if not wait_health(values):
                     raise UpdateError("new release failed loopback health")
@@ -561,7 +561,7 @@ def main() -> int:
                     shutil.copy2(source, pending)
                     os.replace(pending, os.path.join(install_dir, name))
                 values = validate(env_path)
-                run(compose_command(compose_path, env_path, "up", "-d", "--no-build"), timeout=300)
+                run(compose_command(compose_path, env_path, "up", "-d", "--no-build", "--remove-orphans"), timeout=300)
                 if not wait_health(values):
                     raise UpdateError("previous runtime did not recover health")
                 api_restore_backup(values, backup_path)

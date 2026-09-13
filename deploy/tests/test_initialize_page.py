@@ -62,6 +62,7 @@ class InitializePageMetadataTests(unittest.TestCase):
         width, height = struct.unpack(">II", header[16:24])
         self.assertEqual(int(self.parser.meta["og:image:width"]), width)
         self.assertEqual(int(self.parser.meta["og:image:height"]), height)
+        self.assertEqual((INITIALIZE_ROOT / "favicon.png").read_bytes(), image_path.read_bytes())
 
 
 if __name__ == "__main__":

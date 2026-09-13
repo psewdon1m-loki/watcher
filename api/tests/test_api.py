@@ -744,6 +744,12 @@ class ApiTests(unittest.TestCase):
             status, body = self.request("GET", "/api/v1/clients")
             self.assertEqual(401, status, body)
 
+            status, body = self.request("GET", "/api/v1/status")
+            self.assertEqual(401, status, body)
+
+            status, body = self.request("GET", "/api/v1/public/status")
+            self.assertEqual(200, status, body)
+
             status, body = self.request(
                 "GET",
                 "/api/v1/clients",
@@ -1062,6 +1068,173 @@ class ApiTests(unittest.TestCase):
         status, _ = self.request("DELETE", "/api/v1/register/panel.public_url")
         self.assertEqual(200, status)
 
+    def test_status_targets_checks_and_public_payload_are_sanitized(self):
+        status, created = self.request(
+            "POST",
+            "/api/v1/connections",
+            {
+                "id": "status-canary",
+                "status": "active",
+                "configurations": [
+                    "vless://private-credential@node.example:443?type=grpc&security=reality#Public%20Canary",
+                    "vless://another-credential@node.example:443?type=ws&security=tls#Duplicate%20Endpoint",
+                ],
+            },
+        )
+        self.assertEqual(201, status, created)
+
+        status, initial = self.request("GET", "/api/v1/status")
+        self.assertEqual(200, status, initial)
+        self.assertEqual(4, len(initial["components"]))
+        self.assertEqual(1, len(initial["availableConfigurations"]))
+        target = initial["availableConfigurations"][0]
+        self.assertEqual("Public Canary", target["label"])
+        self.assertEqual("node.example:443", target["endpoint"])
+
+        status, selected = self.request(
+            "PUT",
+            "/api/v1/status/targets",
+            {"configurationKeys": [target["configurationKey"]]},
+        )
+        self.assertEqual(200, status, selected)
+        self.assertEqual([target["configurationKey"]], selected["selectedConfigurationKeys"])
+        synchronized_targets = app.external_status_targets()
+        self.assertEqual(
+            [
+                {
+                    "configurationKey": target["configurationKey"],
+                    "label": "Public Canary",
+                    "host": "node.example",
+                    "port": 443,
+                }
+            ],
+            synchronized_targets,
+        )
+        self.assertNotIn("private-credential", json.dumps(synchronized_targets))
+
+        old_connection_probe = app.probe_vless_configuration
+        old_creation_probe = app.probe_new_connection_creation
+        old_subscription_probe = app.probe_subscription_delivery
+        try:
+            app.probe_vless_configuration = lambda item: {
+                "status": "operational",
+                "reasonCode": "endpoint_reachable",
+                "checkedAt": app.utc_now(),
+                "latencyMs": 12,
+            }
+            app.probe_new_connection_creation = lambda: {
+                "status": "operational",
+                "reasonCode": "pasarguard_ready",
+                "checkedAt": app.utc_now(),
+                "latencyMs": 18,
+            }
+            app.probe_subscription_delivery = lambda: {
+                "status": "operational",
+                "reasonCode": "subscription_available",
+                "checkedAt": app.utc_now(),
+                "latencyMs": 21,
+            }
+            status, checked = self.request("POST", "/api/v1/status/check")
+        finally:
+            app.probe_vless_configuration = old_connection_probe
+            app.probe_new_connection_creation = old_creation_probe
+            app.probe_subscription_delivery = old_subscription_probe
+        self.assertEqual(200, status, checked)
+        self.assertEqual("operational", checked["overallStatus"])
+        specific = next(item for item in checked["components"] if item["key"] == "specific_connections")
+        self.assertEqual("node.example:443", specific["details"][0]["endpoint"])
+
+        status, public = self.request("GET", "/api/v1/public/status")
+        self.assertEqual(200, status, public)
+        self.assertEqual("operational", public["overallStatus"])
+        serialized = json.dumps(public, ensure_ascii=False)
+        self.assertIn("Public Canary", serialized)
+        self.assertNotIn("private-credential", serialized)
+        self.assertNotIn("node.example", serialized)
+        self.assertNotIn("status-canary", serialized)
+        self.assertNotIn("configurationKey", serialized)
+
+        status, rejected = self.request(
+            "PUT",
+            "/api/v1/status/targets",
+            {"configurationKeys": ["0" * 64]},
+        )
+        self.assertEqual(400, status, rejected)
+        self.assertEqual("status_configuration_not_found", rejected["error"])
+
+    def test_watcher_status_is_independent_from_downstream_components(self):
+        status, created = self.request(
+            "POST",
+            "/api/v1/connections",
+            {
+                "id": "status-downstream-outage",
+                "status": "active",
+                "configurations": ["vless://credential@offline.example:443#Offline%20Canary"],
+            },
+        )
+        self.assertEqual(201, status, created)
+
+        status, initial = self.request("GET", "/api/v1/status")
+        self.assertEqual(200, status, initial)
+        target = initial["availableConfigurations"][0]
+        status, _ = self.request(
+            "PUT",
+            "/api/v1/status/targets",
+            {"configurationKeys": [target["configurationKey"]]},
+        )
+        self.assertEqual(200, status)
+
+        outage = lambda reason: {
+            "status": "major_outage",
+            "reasonCode": reason,
+            "checkedAt": app.utc_now(),
+            "latencyMs": 1,
+        }
+        old_connection_probe = app.probe_vless_configuration
+        old_creation_probe = app.probe_new_connection_creation
+        old_subscription_probe = app.probe_subscription_delivery
+        try:
+            app.probe_vless_configuration = lambda item: outage("endpoint_unreachable")
+            app.probe_new_connection_creation = lambda: outage("pasarguard_unavailable")
+            app.probe_subscription_delivery = lambda: outage("subscription_unavailable")
+            status, checked = self.request("POST", "/api/v1/status/check")
+        finally:
+            app.probe_vless_configuration = old_connection_probe
+            app.probe_new_connection_creation = old_creation_probe
+            app.probe_subscription_delivery = old_subscription_probe
+
+        self.assertEqual(200, status, checked)
+        components = {item["key"]: item for item in checked["components"]}
+        self.assertEqual("operational", components["connection"]["status"])
+        self.assertEqual("watcher_reachable", components["connection"]["reasonCode"])
+        self.assertEqual("major_outage", components["specific_connections"]["status"])
+        self.assertEqual("major_outage", components["new_connections"]["status"])
+        self.assertEqual("major_outage", components["subscriptions"]["status"])
+        self.assertEqual("partial_outage", checked["overallStatus"])
+
+    def test_subscription_checker_transport_failure_is_not_reported_as_outage(self):
+        status, created = self.request(
+            "POST",
+            "/api/v1/connections",
+            {
+                "id": "subscription-check-unavailable",
+                "status": "active",
+                "configurations": ["vless://credential@node.example:443#Canary"],
+            },
+        )
+        self.assertEqual(201, status, created)
+        previous = app.fetch_subscription
+        try:
+            app.fetch_subscription = lambda *args, **kwargs: (_ for _ in ()).throw(
+                ValueError("subscription_dns_failed")
+            )
+            result = app.probe_subscription_delivery()
+        finally:
+            app.fetch_subscription = previous
+        self.assertEqual("unknown", result["status"])
+        self.assertEqual("unavailable", result["checkStatus"])
+        self.assertEqual("subscription_check_unavailable", result["reasonCode"])
+
     def test_pasarguard_provision_reset_and_stable_watcher_subscription(self):
         with app.connect(app.DB_PATH) as db:
             db.execute("UPDATE register_entries SET value = 'subscriptions.example' WHERE key = 'watcher.public_sni'")
@@ -1097,7 +1270,12 @@ class ApiTests(unittest.TestCase):
             "note": "managed-by=vpnenus-watcher; connection=permanent-id",
             "subscription_url": "/sub/old-token",
             "proxy_settings": {"vless": {"id": "old-credential"}},
+            "used_traffic": 1024,
+            "lifetime_used_traffic": 3072,
+            "data_limit": 10 * 1024 * 1024,
         }
+        delete_failures = [True]
+        deleted_users = []
 
         def fake_pasarguard_request(method, path, body=None):
             calls.append((method, path, body))
@@ -1114,7 +1292,15 @@ class ApiTests(unittest.TestCase):
             if method == "POST" and path.endswith("/by-id/71/revoke_sub"):
                 remote["subscription_url"] = "/sub/new-token"
                 remote["proxy_settings"] = {"vless": {"id": "new-credential"}}
+                remote["used_traffic"] = 2048
+                remote["lifetime_used_traffic"] = 4096
                 return dict(remote)
+            if method == "DELETE" and path == "/api/user/by-id/71":
+                if delete_failures:
+                    delete_failures.pop()
+                    raise app.PasarGuardError(502, "pasarguard_http_503", "temporarily unavailable")
+                deleted_users.append(71)
+                return {}
             self.fail(f"Unexpected PasarGuard call: {method} {path}")
 
         def fake_fetch(url, verify_tls, **kwargs):
@@ -1138,6 +1324,10 @@ class ApiTests(unittest.TestCase):
             self.assertTrue(stable_url.startswith("https://subscriptions.example/sub/"))
             self.assertEqual("https://pasarguard.example/sub/old-token", connection["subscription_url"])
             self.assertIn("old-credential", connection["configurations"][0])
+            self.assertEqual(1024, connection["used_traffic_bytes"])
+            self.assertEqual(3072, connection["lifetime_used_traffic_bytes"])
+            self.assertEqual(10 * 1024 * 1024, connection["data_limit_bytes"])
+            self.assertTrue(connection["traffic_updated_at"])
 
             public_path = app.urlparse(stable_url).path
             status, raw_headers, raw = self.raw_request("GET", f"{public_path}?format=raw")
@@ -1174,7 +1364,35 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(stable_url, connection["public_subscription_url"])
             self.assertIn("new-token", connection["subscription_url"])
             self.assertIn("new-credential", connection["configurations"][0])
+            self.assertEqual(2048, connection["used_traffic_bytes"])
+            self.assertEqual(4096, connection["lifetime_used_traffic_bytes"])
             self.assertIn(("POST", "/api/user/by-id/71/revoke_sub", None), calls)
+
+            remote["used_traffic"] = 8192
+            remote["lifetime_used_traffic"] = 16384
+            status, scanned = self.request("POST", "/api/v1/connections/permanent-id/scan")
+            self.assertEqual(200, status, scanned)
+            status, listed = self.request("GET", "/api/v1/connections")
+            self.assertEqual(200, status, listed)
+            refreshed = listed["connections"][0]
+            self.assertEqual(8192, refreshed["used_traffic_bytes"])
+            self.assertEqual(16384, refreshed["lifetime_used_traffic_bytes"])
+
+            status, failed_delete = self.request("DELETE", "/api/v1/connections/permanent-id")
+            self.assertEqual(502, status, failed_delete)
+            self.assertEqual("pasarguard_http_503", failed_delete["error"])
+            status, preserved = self.request("GET", "/api/v1/connections")
+            self.assertEqual(200, status, preserved)
+            self.assertEqual("permanent-id", preserved["connections"][0]["id"])
+
+            status, deleted = self.request("DELETE", "/api/v1/connections/permanent-id")
+            self.assertEqual(200, status, deleted)
+            self.assertTrue(deleted["pasarguardUserDeleted"])
+            self.assertEqual([71], deleted_users)
+            self.assertIn(("DELETE", "/api/user/by-id/71", None), calls)
+            status, empty = self.request("GET", "/api/v1/connections")
+            self.assertEqual(200, status, empty)
+            self.assertEqual([], empty["connections"])
         finally:
             app.pasarguard_request = old_request
             app.fetch_subscription = old_fetch

@@ -9,7 +9,9 @@ Local control-plane backend for Loki Proxy.
 - `worker`: retention cleanup for old events, analytics reports and delivered commands.
 - `backup`: scheduled encrypted recovery archives into the `watcher-backups` Docker volume.
 
-Production nginx is managed separately on the host and is not part of Docker Compose.
+Production nginx is managed separately on the host and is not part of Docker
+Compose. The integration contract for `/etc/nginx/sites-available/loki` is in
+[`deploy/NGINX_LOKI.md`](deploy/NGINX_LOKI.md).
 
 ## Operator Interface
 
@@ -54,6 +56,8 @@ LOKI_WATCHER_PASARGUARD_API_KEY=<panel-api-key>
 LOKI_WATCHER_PUBLIC_INITIALIZATION_MAX_PER_HOUR=5
 LOKI_WATCHER_PUBLIC_INITIALIZATION_GLOBAL_MAX_PER_HOUR=100
 LOKI_WATCHER_CONNECTION_SCAN_INTERVAL_MINUTES=15
+LOKI_WATCHER_STATUS_CHECK_INTERVAL_SECONDS=60
+LOKI_WATCHER_STATUS_PROBE_TIMEOUT_SECONDS=5
 LOKI_WATCHER_LOG_RETENTION_DAYS=30
 LOKI_WATCHER_TELEMETRY_RETENTION_DAYS=30
 ```
@@ -61,7 +65,7 @@ LOKI_WATCHER_TELEMETRY_RETENTION_DAYS=30
 Start the services in detached mode:
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build --remove-orphans
 docker compose ps
 docker compose logs -f --tail=100
 ```
@@ -77,20 +81,35 @@ The containers listen only on localhost:
 127.0.0.1:18081 -> dashboard
 ```
 
-Configure the separately managed host nginx to route API/update traffic to
-`18080` and dashboard traffic to `18081`, for example:
+Copy [`deploy/nginx-loki.locations.conf`](deploy/nginx-loki.locations.conf) to
+the server, then include it inside the HTTPS `server {}` block in
+`/etc/nginx/sites-available/loki`:
 
 ```nginx
-location /api/          { proxy_pass http://127.0.0.1:18080; }
-location /sub/          { access_log off; proxy_pass http://127.0.0.1:18080; }
-location = /health      { proxy_pass http://127.0.0.1:18080; }
-location = /manifest.json { proxy_pass http://127.0.0.1:18080; }
-location = /manifest.json.sig { proxy_pass http://127.0.0.1:18080; }
-location /assets/       { proxy_pass http://127.0.0.1:18080; }
-location /              { proxy_pass http://127.0.0.1:18081; }
+include /etc/nginx/snippets/loki-watcher.locations.conf;
 ```
 
-Do not expose `18080` or `18081` publicly.
+Keep TLS, certificates, ACME and PasarGuard routing in the server-owned `loki`
+file. Watcher claims `/api/v1/`, not all of `/api/`, so PasarGuard's
+`/api/user/...` routes remain intact. Validate with `nginx -t` before reloading.
+Do not expose `18080` or `18081` publicly. See
+[`deploy/NGINX_LOKI.md`](deploy/NGINX_LOKI.md) for the complete route contract.
+
+## Service status
+
+The authenticated Dashboard includes a service-status panel. Operators select
+specific saved `vless://` configurations there; Watcher then validates their
+URI structure and checks DNS/TCP reachability on the configured interval. The
+same panel reports PasarGuard/template readiness for new connection creation
+and verifies one stable Watcher subscription through its public HTTPS URL.
+
+The sanitized public page is hosted independently at
+`https://statuscake.shmoza.net/`. Watcher synchronizes the selected public
+label, host, port and opaque configuration key using
+`LOKI_WATCHER_STATUS_SERVICE_URL` and `LOKI_WATCHER_STATUS_SERVICE_TOKEN`.
+Connection IDs, VLESS URIs, credentials and subscription tokens are never sent
+to the status service. It stores the selected targets and continues its own
+DNS/TCP checks when Watcher or the Watcher host is unavailable.
 
 The `/sub/` path carries an opaque bearer token. Do not record full subscription
 paths in reverse-proxy, CDN or analytics logs. Watcher redacts these tokens from
@@ -175,9 +194,9 @@ responses contain a `vlessLinks` array and deliberately omit both the
 PasarGuard subscription URL and Watcher's stable custom subscription URL.
 
 New anonymous allocations are limited per source address and globally with the
-two `LOKI_WATCHER_PUBLIC_INITIALIZATION_*` values above. The supplied nginx
-template also applies a separate burst limit to this expensive route. Existing
-request IDs remain retryable without consuming another allocation quota.
+two `LOKI_WATCHER_PUBLIC_INITIALIZATION_*` values above. Existing request IDs
+remain retryable without consuming another allocation quota. Additional
+edge-rate limiting can remain in the server-owned `loki` configuration.
 
 ## Production bootstrap
 
@@ -368,11 +387,11 @@ remaining boundaries.
 - Enrollment, telemetry batches, update state and command polling are signed with HMAC SHA-256. Re-enrollment cannot replace an existing client secret.
 - Deleting a client from the dashboard removes its server-side row, events, analytics and commands. A still-installed client can enroll again on the next telemetry/launch cycle.
 - Dashboard auth is controlled by `LOKI_WATCHER_DASHBOARD_USERNAME` and `LOKI_WATCHER_DASHBOARD_PASSWORD`. Legacy bearer-token auth via `LOKI_WATCHER_DASHBOARD_TOKEN` still works when username/password are not set.
-- Dashboard authentication is rate-limited per reverse-proxy-derived source: ten failed requests in 60 seconds cause a five-minute block. The supplied nginx template overwrites, rather than trusts, incoming forwarding headers.
+- Dashboard authentication is rate-limited per reverse-proxy-derived source: ten failed requests in 60 seconds cause a five-minute block. The host-nginx include overwrites, rather than trusts, incoming forwarding headers.
 - Ordinary subscription imports require HTTPS, validate every redirect and reject DNS results for loopback, private, link-local, reserved and metadata destinations. The only HTTP/private-origin exception is the exact operator-configured PasarGuard origin.
 - Public browser initialization is intentionally anonymous, idempotent and rate-limited. Treat it as an Internet-facing credential-issuance route and keep the application-level and reverse-proxy limits enabled.
 - Public-IP geolocation is disabled by default. Enabling it is an explicit privacy decision because the configured external lookup receives the observed public IP.
-- The nginx template rejects unexpected Host/SNI values, disables subscription access logging and adds HSTS, CSP and other browser hardening headers. Application containers remain loopback-only behind that boundary.
+- The server-owned `loki` site must reject unexpected Host/SNI values and terminate TLS. The supplied location include disables subscription access logging and adds browser-hardening headers; application containers remain loopback-only behind that boundary.
 - Text log payloads and core telemetry events are retained for 30 days by default. The limits are controlled by `LOKI_WATCHER_LOG_RETENTION_DAYS` and `LOKI_WATCHER_TELEMETRY_RETENTION_DAYS`.
 - Analytics JSON is retained for 30 days by default and also capped at 512 MiB globally. The strictest of `LOKI_WATCHER_ANALYTICS_RETENTION_DAYS` and `LOKI_WATCHER_ANALYTICS_MAX_BYTES` wins. Heartbeats remain ordinary telemetry and are never listed on the Analytics page.
 - Administrative audit events use the strictest of 10,000 entries, 30 days and 64 MiB by default. Configure these with `LOKI_WATCHER_AUDIT_MAX_ENTRIES`, `LOKI_WATCHER_AUDIT_RETENTION_DAYS` and `LOKI_WATCHER_AUDIT_MAX_BYTES`.

@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
@@ -72,6 +73,21 @@ CONNECTION_SCAN_INTERVAL_MINUTES_DEFAULT = min(
     max(1, int(os.environ.get("LOKI_WATCHER_CONNECTION_SCAN_INTERVAL_MINUTES", "15"))),
 )
 CONNECTION_SCAN_POLL_SECONDS = 30
+STATUS_CHECK_INTERVAL_SECONDS = min(
+    3600,
+    max(30, int(os.environ.get("LOKI_WATCHER_STATUS_CHECK_INTERVAL_SECONDS", "60"))),
+)
+STATUS_PROBE_TIMEOUT_SECONDS = min(
+    20,
+    max(1, int(os.environ.get("LOKI_WATCHER_STATUS_PROBE_TIMEOUT_SECONDS", "5"))),
+)
+STATUS_MAX_MONITORED_CONFIGURATIONS = 50
+STATUS_SERVICE_URL = os.environ.get("LOKI_WATCHER_STATUS_SERVICE_URL", "").strip().rstrip("/")
+STATUS_SERVICE_TOKEN = os.environ.get("LOKI_WATCHER_STATUS_SERVICE_TOKEN", "").strip()
+STATUS_SERVICE_TIMEOUT_SECONDS = min(
+    30,
+    max(2, int(os.environ.get("LOKI_WATCHER_STATUS_SERVICE_TIMEOUT_SECONDS", "20"))),
+)
 PASARGUARD_API_KEY = os.environ.get("LOKI_WATCHER_PASARGUARD_API_KEY", "").strip()
 PASARGUARD_BASE_URL_DEFAULT = os.environ.get("LOKI_WATCHER_PASARGUARD_BASE_URL", "").strip().rstrip("/")
 PASARGUARD_TEMPLATE_ID_DEFAULT = os.environ.get("LOKI_WATCHER_PASARGUARD_USER_TEMPLATE_ID", "").strip()
@@ -159,6 +175,7 @@ _public_initialization_global_attempts: list[float] = []
 _dashboard_auth_lock = threading.Lock()
 _dashboard_auth_failures: dict[str, list[float]] = {}
 _dashboard_auth_blocked_until: dict[str, float] = {}
+_status_check_lock = threading.Lock()
 DASHBOARD_AUTH_WINDOW_SECONDS = 60
 DASHBOARD_AUTH_MAX_FAILURES = 10
 DASHBOARD_AUTH_BLOCK_SECONDS = 300
@@ -332,6 +349,10 @@ def init_db(path: str | None = None) -> None:
                 last_sync_at TEXT,
                 last_sync_status TEXT,
                 last_error TEXT,
+                used_traffic_bytes INTEGER,
+                lifetime_used_traffic_bytes INTEGER,
+                data_limit_bytes INTEGER,
+                traffic_updated_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (connection_id) REFERENCES issued_connections(id)
@@ -423,6 +444,10 @@ def init_db(path: str | None = None) -> None:
             "ALTER TABLE issued_connections ADD COLUMN provider_error TEXT",
             "ALTER TABLE issued_connections ADD COLUMN subscription_renewal_date TEXT",
             "ALTER TABLE issued_connections ADD COLUMN track_subscription INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE connection_sources ADD COLUMN used_traffic_bytes INTEGER",
+            "ALTER TABLE connection_sources ADD COLUMN lifetime_used_traffic_bytes INTEGER",
+            "ALTER TABLE connection_sources ADD COLUMN data_limit_bytes INTEGER",
+            "ALTER TABLE connection_sources ADD COLUMN traffic_updated_at TEXT",
             "ALTER TABLE audit_events ADD COLUMN event_id TEXT",
             "ALTER TABLE audit_events ADD COLUMN severity TEXT NOT NULL DEFAULT 'info'",
             "ALTER TABLE audit_events ADD COLUMN target_type TEXT",
@@ -518,6 +543,16 @@ def init_db(path: str | None = None) -> None:
             VALUES ('connections.scan_interval_minutes', ?, ?)
             """,
             (str(CONNECTION_SCAN_INTERVAL_MINUTES_DEFAULT), now),
+        )
+        db.executemany(
+            """
+            INSERT OR IGNORE INTO watcher_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            [
+                ("status.monitored_configurations", "[]", now),
+                ("status.current", "{}", now),
+            ],
         )
         db.commit()
     finally:
@@ -2029,7 +2064,9 @@ def connection_source_rows(db: sqlite3.Connection, connection_id: str) -> list[s
         """
         SELECT id, connection_id, provider, external_user_id, external_username, template_id,
                subscription_url, configurations_json, verify_tls, status, credentials_fingerprint,
-               reset_from_fingerprint, last_sync_at, last_sync_status, last_error, created_at, updated_at
+               reset_from_fingerprint, last_sync_at, last_sync_status, last_error,
+               used_traffic_bytes, lifetime_used_traffic_bytes, data_limit_bytes, traffic_updated_at,
+               created_at, updated_at
         FROM connection_sources WHERE connection_id = ? ORDER BY created_at, id
         """,
         (connection_id,),
@@ -2042,6 +2079,8 @@ def connection_source_dict(row: sqlite3.Row) -> dict[str, Any]:
     item["verify_tls"] = bool(item.get("verify_tls"))
     item.pop("credentials_fingerprint", None)
     item["reset_pending"] = bool(item.pop("reset_from_fingerprint", None))
+    for key in ("used_traffic_bytes", "lifetime_used_traffic_bytes", "data_limit_bytes"):
+        item[key] = max(0, int(item.get(key) or 0))
     return item
 
 
@@ -2064,9 +2103,21 @@ def issued_connection_row(
     if sources is not None:
         item["sources"] = [connection_source_dict(source) for source in sources]
         item["provider"] = item["sources"][0]["provider"] if len(item["sources"]) == 1 else "aggregate"
+        pasarguard_sources = [source for source in item["sources"] if source["provider"] == "pasarguard"]
+        item["used_traffic_bytes"] = sum(source["used_traffic_bytes"] for source in pasarguard_sources)
+        item["lifetime_used_traffic_bytes"] = sum(
+            source["lifetime_used_traffic_bytes"] for source in pasarguard_sources
+        )
+        item["data_limit_bytes"] = sum(source["data_limit_bytes"] for source in pasarguard_sources)
+        traffic_updates = [source["traffic_updated_at"] for source in pasarguard_sources if source["traffic_updated_at"]]
+        item["traffic_updated_at"] = max(traffic_updates) if traffic_updates else None
     else:
         item["sources"] = []
         item["provider"] = "manual"
+        item["used_traffic_bytes"] = 0
+        item["lifetime_used_traffic_bytes"] = 0
+        item["data_limit_bytes"] = 0
+        item["traffic_updated_at"] = None
     return item
 
 
@@ -2215,6 +2266,28 @@ def pasarguard_get_user_by_id(user_id: str) -> dict[str, Any]:
     return pasarguard_request("GET", f"/api/user/by-id/{quote(str(user_id), safe='')}")
 
 
+def delete_pasarguard_user(connection_id: str, external_user_id: str) -> bool:
+    try:
+        user = pasarguard_get_user_by_id(external_user_id)
+    except PasarGuardError as exc:
+        if exc.code == "pasarguard_http_404":
+            return False
+        raise
+    if str(user.get("id") or "") != external_user_id or str(user.get("username") or "") != connection_id:
+        raise PasarGuardError(
+            HTTPStatus.CONFLICT,
+            "pasarguard_user_identity_mismatch",
+            "Stored PasarGuard user identity no longer matches this Watcher connection.",
+        )
+    try:
+        pasarguard_request("DELETE", f"/api/user/by-id/{quote(external_user_id, safe='')}")
+    except PasarGuardError as exc:
+        if exc.code == "pasarguard_http_404":
+            return False
+        raise
+    return True
+
+
 def validate_pasarguard_template_for_permanent_id(template_id: int) -> None:
     template = pasarguard_request("GET", f"/api/user_template/{template_id}")
     if template.get("username_prefix") or template.get("username_suffix"):
@@ -2233,6 +2306,22 @@ def pasarguard_credentials_fingerprint(user: dict[str, Any]) -> str | None:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def pasarguard_traffic_snapshot(user: dict[str, Any]) -> dict[str, int]:
+    snapshot: dict[str, int] = {}
+    for source_key, target_key in (
+        ("used_traffic", "used_traffic_bytes"),
+        ("lifetime_used_traffic", "lifetime_used_traffic_bytes"),
+        ("data_limit", "data_limit_bytes"),
+    ):
+        raw_value = user.get(source_key)
+        try:
+            value = int(raw_value or 0)
+        except (TypeError, ValueError, OverflowError):
+            value = 0
+        snapshot[target_key] = max(0, value)
+    return snapshot
+
+
 def upsert_connection_source(
     db: sqlite3.Connection,
     *,
@@ -2248,6 +2337,10 @@ def upsert_connection_source(
     reset_from_fingerprint: str | None = None,
     sync_status: str | None = None,
     error: str | None = None,
+    used_traffic_bytes: int | None = None,
+    lifetime_used_traffic_bytes: int | None = None,
+    data_limit_bytes: int | None = None,
+    traffic_updated_at: str | None = None,
 ) -> None:
     now = utc_now()
     source_id = f"{connection_id}:{provider}"
@@ -2256,8 +2349,10 @@ def upsert_connection_source(
         INSERT INTO connection_sources
             (id, connection_id, provider, external_user_id, external_username, template_id,
              subscription_url, configurations_json, verify_tls, status, credentials_fingerprint,
-             reset_from_fingerprint, last_sync_at, last_sync_status, last_error, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+             reset_from_fingerprint, last_sync_at, last_sync_status, last_error,
+             used_traffic_bytes, lifetime_used_traffic_bytes, data_limit_bytes, traffic_updated_at,
+             created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             external_user_id = COALESCE(excluded.external_user_id, connection_sources.external_user_id),
             external_username = COALESCE(excluded.external_username, connection_sources.external_username),
@@ -2270,6 +2365,10 @@ def upsert_connection_source(
             last_sync_at = COALESCE(excluded.last_sync_at, connection_sources.last_sync_at),
             last_sync_status = COALESCE(excluded.last_sync_status, connection_sources.last_sync_status),
             last_error = excluded.last_error,
+            used_traffic_bytes = COALESCE(excluded.used_traffic_bytes, connection_sources.used_traffic_bytes),
+            lifetime_used_traffic_bytes = COALESCE(excluded.lifetime_used_traffic_bytes, connection_sources.lifetime_used_traffic_bytes),
+            data_limit_bytes = COALESCE(excluded.data_limit_bytes, connection_sources.data_limit_bytes),
+            traffic_updated_at = COALESCE(excluded.traffic_updated_at, connection_sources.traffic_updated_at),
             updated_at = excluded.updated_at
         """,
         (
@@ -2287,6 +2386,10 @@ def upsert_connection_source(
             now if sync_status else None,
             sync_status,
             error,
+            used_traffic_bytes,
+            lifetime_used_traffic_bytes,
+            data_limit_bytes,
+            traffic_updated_at,
             now,
             now,
         ),
@@ -2377,8 +2480,28 @@ def refresh_issued_connection(connection_id: str, actor: str) -> dict[str, Any]:
     errors: list[str] = []
     for source in sources:
         source_url = str(source["subscription_url"] or "").strip()
+        traffic_snapshot: dict[str, int] | None = None
         if source["status"] != "active":
             continue
+        if (
+            "provider" in source.keys()
+            and source["provider"] == "pasarguard"
+            and source["external_user_id"]
+        ):
+            try:
+                remote_user = pasarguard_get_user_by_id(str(source["external_user_id"]))
+                remote_user_id, _, remote_subscription_url = validate_pasarguard_user_identity(
+                    connection_id,
+                    remote_user,
+                )
+                if remote_user_id != str(source["external_user_id"]):
+                    raise PasarGuardError(HTTPStatus.CONFLICT, "pasarguard_user_id_mismatch")
+                source_url = remote_subscription_url
+                traffic_snapshot = pasarguard_traffic_snapshot(remote_user)
+            except PasarGuardError:
+                # Subscription refresh remains useful during a transient Panel API
+                # outage; keep the last traffic snapshot and try the stored URL.
+                pass
         if "provider" in source.keys() and source["provider"] == "direct" and not source_url:
             if decoded_configurations(source["configurations_json"]):
                 successful += 1
@@ -2414,6 +2537,12 @@ def refresh_issued_connection(connection_id: str, actor: str) -> dict[str, Any]:
                         credentials_fingerprint=source["credentials_fingerprint"],
                         reset_from_fingerprint=source["reset_from_fingerprint"],
                         sync_status="success",
+                        used_traffic_bytes=traffic_snapshot["used_traffic_bytes"] if traffic_snapshot else None,
+                        lifetime_used_traffic_bytes=(
+                            traffic_snapshot["lifetime_used_traffic_bytes"] if traffic_snapshot else None
+                        ),
+                        data_limit_bytes=traffic_snapshot["data_limit_bytes"] if traffic_snapshot else None,
+                        traffic_updated_at=utc_now() if traffic_snapshot else None,
                     )
             continue
         if "provider" in source.keys():
@@ -2602,6 +2731,7 @@ def provision_pasarguard_connection(connection_id: str, actor: str) -> dict[str,
                 )
             external_user_id, external_username, subscription_url = validate_pasarguard_user_identity(connection_id, user)
             fingerprint = pasarguard_credentials_fingerprint(user)
+            traffic_snapshot = pasarguard_traffic_snapshot(user)
             with connect() as db:
                 existing_configs = decoded_configurations(source["configurations_json"])
                 upsert_connection_source(
@@ -2615,6 +2745,8 @@ def provision_pasarguard_connection(connection_id: str, actor: str) -> dict[str,
                     configurations=existing_configs,
                     verify_tls=True,
                     credentials_fingerprint=fingerprint,
+                    **traffic_snapshot,
+                    traffic_updated_at=utc_now(),
                 )
                 db.execute(
                     """
@@ -2683,6 +2815,7 @@ def reset_pasarguard_connection(connection_id: str, actor: str) -> dict[str, Any
                 )
             external_user_id, external_username, subscription_url = validate_pasarguard_user_identity(connection_id, user)
             new_fingerprint = pasarguard_credentials_fingerprint(user)
+            traffic_snapshot = pasarguard_traffic_snapshot(user)
             if new_fingerprint is None or new_fingerprint == pending_fingerprint:
                 raise PasarGuardError(HTTPStatus.BAD_GATEWAY, "pasarguard_credentials_not_rotated")
             with connect() as db:
@@ -2698,6 +2831,8 @@ def reset_pasarguard_connection(connection_id: str, actor: str) -> dict[str, Any
                     verify_tls=True,
                     credentials_fingerprint=new_fingerprint,
                     reset_from_fingerprint=pending_fingerprint,
+                    **traffic_snapshot,
+                    traffic_updated_at=utc_now(),
                 )
                 db.execute(
                     "UPDATE issued_connections SET subscription_url = ?, verify_tls = 1, updated_at = ? WHERE id = ?",
@@ -2764,6 +2899,581 @@ def run_connection_scanner(stop_event: threading.Event) -> None:
         except Exception as exc:
             print(f"connection scanner unexpected error: {type(exc).__name__}")
         stop_event.wait(CONNECTION_SCAN_POLL_SECONDS)
+
+
+def status_configuration_key(connection_id: str, configuration: str) -> str:
+    return hashlib.sha256(f"{connection_id}\0{configuration}".encode("utf-8")).hexdigest()
+
+
+def parse_vless_status_target(connection_id: str, configuration: str, ordinal: int) -> dict[str, Any] | None:
+    try:
+        parsed = urlparse(configuration)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "vless" or not parsed.hostname or port is None or not 1 <= port <= 65535:
+        return None
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    fragment = re.sub(r"[\x00-\x1f\x7f]+", " ", unquote(parsed.fragment)).strip()
+    label = fragment[:96] or f"Подключение {ordinal}"
+    return {
+        "configurationKey": status_configuration_key(connection_id, configuration),
+        "connectionId": connection_id,
+        "label": label,
+        "endpoint": f"{parsed.hostname}:{port}",
+        "host": parsed.hostname,
+        "port": port,
+        "transport": str(query.get("type") or "tcp")[:32],
+        "security": str(query.get("security") or "none")[:32],
+        "configuration": configuration,
+    }
+
+
+def status_configuration_catalog(db: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    if db is None:
+        with connect() as connection:
+            return status_configuration_catalog(connection)
+    rows = db.execute(
+        """
+        SELECT id, configurations_json
+        FROM issued_connections
+        WHERE status = 'active'
+        ORDER BY created_at DESC, id
+        """
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    targets_by_endpoint: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        ordinal = 0
+        for configuration in decoded_configurations(row["configurations_json"]):
+            if not configuration.lower().startswith("vless://"):
+                continue
+            ordinal += 1
+            target = parse_vless_status_target(row["id"], configuration, ordinal)
+            if target is not None:
+                endpoint_identity = str(target["endpoint"]).lower()
+                existing = targets_by_endpoint.get(endpoint_identity)
+                if existing is not None:
+                    existing["configurationAliases"].append(target["configurationKey"])
+                    continue
+                target["configurationAliases"] = [target["configurationKey"]]
+                targets_by_endpoint[endpoint_identity] = target
+                result.append(target)
+    return result
+
+
+def normalize_status_configuration_keys(keys: list[str], catalog: list[dict[str, Any]]) -> list[str]:
+    aliases: dict[str, str] = {}
+    for target in catalog:
+        primary_key = str(target["configurationKey"])
+        for alias in target.get("configurationAliases", [primary_key]):
+            aliases[str(alias)] = primary_key
+    result: list[str] = []
+    for key in keys:
+        normalized = aliases.get(key, key)
+        if normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def read_status_setting(db: sqlite3.Connection, key: str, fallback: Any) -> Any:
+    row = db.execute("SELECT value FROM watcher_settings WHERE key = ?", (key,)).fetchone()
+    try:
+        return json.loads(row["value"]) if row is not None else fallback
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def write_status_setting(db: sqlite3.Connection, key: str, value: Any) -> None:
+    now = utc_now()
+    db.execute(
+        """
+        INSERT INTO watcher_settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        (key, json.dumps(value, ensure_ascii=False, separators=(",", ":")), now),
+    )
+
+
+def selected_status_configuration_keys(db: sqlite3.Connection) -> list[str]:
+    value = read_status_setting(db, "status.monitored_configurations", [])
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        key = str(item or "")
+        if re.fullmatch(r"[0-9a-f]{64}", key) and key not in result:
+            result.append(key)
+    return result[:STATUS_MAX_MONITORED_CONFIGURATIONS]
+
+
+def external_status_targets(db: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    if db is None:
+        with connect() as connection:
+            return external_status_targets(connection)
+    catalog = status_configuration_catalog(db)
+    catalog_by_key = {str(item["configurationKey"]): item for item in catalog}
+    selected_keys = normalize_status_configuration_keys(selected_status_configuration_keys(db), catalog)
+    return [
+        {
+            "configurationKey": str(target["configurationKey"]),
+            "label": str(target["label"]),
+            "host": str(target["host"]),
+            "port": int(target["port"]),
+        }
+        for key in selected_keys
+        if (target := catalog_by_key.get(key)) is not None
+    ]
+
+
+def sync_external_status_targets() -> bool:
+    if not STATUS_SERVICE_URL or not STATUS_SERVICE_TOKEN:
+        return False
+    parsed = urlparse(STATUS_SERVICE_URL)
+    local_http_hosts = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or (parsed.scheme != "https" and parsed.hostname not in local_http_hosts)
+    ):
+        print("external status target sync skipped: invalid service URL")
+        return False
+    payload = json.dumps(
+        {"targets": external_status_targets()},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = Request(
+        f"{STATUS_SERVICE_URL}/api/v1/admin/targets",
+        data=payload,
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {STATUS_SERVICE_TOKEN}",
+            "Content-Type": "application/json",
+            "User-Agent": "LokiWatcher/1.0",
+        },
+        method="PUT",
+    )
+    try:
+        with build_opener(NoRedirectHandler()).open(request, timeout=STATUS_SERVICE_TIMEOUT_SECONDS) as response:
+            response.read(64 * 1024)
+            return response.status == HTTPStatus.OK
+    except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError, ValueError) as exc:
+        print(f"external status target sync failed: {type(exc).__name__}")
+        return False
+
+
+def status_check_result(
+    status: str,
+    reason_code: str,
+    started_at: float,
+    **details: Any,
+) -> dict[str, Any]:
+    check_status = str(details.pop("checkStatus", "completed"))
+    return {
+        "status": status,
+        "serviceStatus": str(details.pop("serviceStatus", status)),
+        "checkStatus": check_status,
+        "reasonCode": reason_code,
+        "checkedAt": utc_now(),
+        "latencyMs": max(0, round((time.monotonic() - started_at) * 1000)),
+        **details,
+    }
+
+
+def probe_vless_configuration(target: dict[str, Any]) -> dict[str, Any]:
+    started_at = time.monotonic()
+    try:
+        with socket.create_connection(
+            (str(target["host"]), int(target["port"])),
+            timeout=STATUS_PROBE_TIMEOUT_SECONDS,
+        ):
+            pass
+    except socket.gaierror:
+        return status_check_result("major_outage", "dns_failed", started_at)
+    except (TimeoutError, OSError):
+        return status_check_result("major_outage", "endpoint_unreachable", started_at)
+    return status_check_result("operational", "endpoint_reachable", started_at)
+
+
+def probe_new_connection_creation() -> dict[str, Any]:
+    started_at = time.monotonic()
+    try:
+        _, template_id, _ = pasarguard_settings()
+        validate_pasarguard_template_for_permanent_id(template_id)
+    except PasarGuardError as exc:
+        return status_check_result("major_outage", exc.code, started_at)
+    except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError):
+        return status_check_result("major_outage", "pasarguard_unavailable", started_at)
+    return status_check_result("operational", "pasarguard_ready", started_at)
+
+
+def probe_subscription_delivery() -> dict[str, Any]:
+    started_at = time.monotonic()
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT id, public_token
+            FROM issued_connections
+            WHERE status = 'active' AND public_token IS NOT NULL AND public_token != ''
+              AND configurations_json != '[]'
+            ORDER BY created_at
+            LIMIT 1
+            """
+        ).fetchone()
+        source_failures = int(
+            db.execute(
+                """
+                SELECT COUNT(*) FROM issued_connections
+                WHERE status = 'active' AND last_scan_status = 'error'
+                """
+            ).fetchone()[0]
+        )
+        base_url = watcher_public_url(db)
+    if row is None:
+        return status_check_result(
+            "unknown", "subscription_canary_missing", started_at, checkStatus="not_configured"
+        )
+    try:
+        configurations = fetch_subscription(
+            public_subscription_url(base_url, row["public_token"]),
+            True,
+        )
+    except HTTPError:
+        return status_check_result("major_outage", "subscription_unavailable", started_at)
+    except (URLError, TimeoutError, ssl.SSLError, OSError):
+        return status_check_result(
+            "unknown", "subscription_check_unavailable", started_at, checkStatus="unavailable"
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        if reason in {
+            "invalid_subscription_url",
+            "subscription_https_required",
+            "subscription_dns_failed",
+            "subscription_private_address_denied",
+            "subscription_redirect_limit_exceeded",
+        }:
+            return status_check_result(
+                "unknown", "subscription_check_unavailable", started_at,
+                checkStatus="unavailable", serviceStatus="unknown",
+            )
+        return status_check_result("major_outage", "subscription_invalid", started_at)
+    if not any(item.lower().startswith("vless://") for item in configurations):
+        return status_check_result("major_outage", "subscription_contains_no_vless", started_at)
+    if source_failures:
+        return status_check_result(
+            "degraded",
+            "subscription_refresh_degraded",
+            started_at,
+            failingSources=source_failures,
+        )
+    return status_check_result("operational", "subscription_available", started_at)
+
+
+def aggregate_connection_status(results: list[dict[str, Any]]) -> str:
+    if not results:
+        return "unknown"
+    statuses = [str(item.get("status") or "unknown") for item in results]
+    operational = statuses.count("operational")
+    unavailable = statuses.count("major_outage")
+    if operational == len(statuses):
+        return "operational"
+    if unavailable == len(statuses):
+        return "major_outage"
+    if operational:
+        return "partial_outage"
+    return "degraded" if any(status == "degraded" for status in statuses) else "unknown"
+
+
+def run_status_checks() -> dict[str, Any] | None:
+    if not _status_check_lock.acquire(blocking=False):
+        return None
+    try:
+        with connect() as db:
+            catalog_items = status_configuration_catalog(db)
+            catalog = {item["configurationKey"]: item for item in catalog_items}
+            selected_keys = normalize_status_configuration_keys(selected_status_configuration_keys(db), catalog_items)
+        selected_targets = [catalog.get(key) for key in selected_keys]
+        connection_results: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=min(8, max(2, len(selected_targets) + 2))) as executor:
+            futures: dict[Any, tuple[str, dict[str, Any] | None]] = {
+                executor.submit(probe_new_connection_creation): ("newConnections", None),
+                executor.submit(probe_subscription_delivery): ("subscriptions", None),
+            }
+            for key, target in zip(selected_keys, selected_targets):
+                if target is None:
+                    connection_results.append(
+                        {
+                            "configurationKey": key,
+                            "label": "Удалённая конфигурация",
+                            "connectionId": "",
+                            **status_check_result("unknown", "configuration_missing", time.monotonic()),
+                        }
+                    )
+                    continue
+                futures[executor.submit(probe_vless_configuration, target)] = ("connection", target)
+
+            services: dict[str, dict[str, Any]] = {}
+            for future in as_completed(futures):
+                kind, target = futures[future]
+                try:
+                    result = future.result()
+                except Exception:
+                    result = status_check_result(
+                        "unknown", "check_failed", time.monotonic(), checkStatus="unavailable"
+                    )
+                if kind == "connection" and target is not None:
+                    connection_results.append(
+                        {
+                            "configurationKey": target["configurationKey"],
+                            "connectionId": target["connectionId"],
+                            "label": target["label"],
+                            "endpoint": target["endpoint"],
+                            "transport": target["transport"],
+                            "security": target["security"],
+                            **result,
+                        }
+                    )
+                else:
+                    services[kind] = result
+
+        ordered_results = sorted(
+            connection_results,
+            key=lambda item: selected_keys.index(item["configurationKey"]),
+        )
+        snapshot = {
+            "schemaVersion": 1,
+            "checkedAt": utc_now(),
+            "connectionStatus": aggregate_connection_status(ordered_results),
+            "connections": ordered_results,
+            "newConnections": services.get("newConnections") or {
+                "status": "unknown", "serviceStatus": "unknown", "checkStatus": "unavailable",
+                "reasonCode": "check_failed", "checkedAt": utc_now(), "latencyMs": 0,
+            },
+            "subscriptions": services.get("subscriptions") or {
+                "status": "unknown", "serviceStatus": "unknown", "checkStatus": "unavailable",
+                "reasonCode": "check_failed", "checkedAt": utc_now(), "latencyMs": 0,
+            },
+        }
+        with connect() as db:
+            write_status_setting(db, "status.current", snapshot)
+        sync_external_status_targets()
+        return snapshot
+    finally:
+        _status_check_lock.release()
+
+
+def status_result_fresh(result: dict[str, Any]) -> dict[str, Any]:
+    checked_at = result.get("checkedAt")
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(str(checked_at))
+    except (TypeError, ValueError):
+        age = timedelta.max
+    if age.total_seconds() <= max(180, STATUS_CHECK_INTERVAL_SECONDS * 3):
+        return result
+    return {
+        **result,
+        "status": "unknown",
+        "serviceStatus": str(result.get("serviceStatus") or result.get("status") or "unknown"),
+        "checkStatus": "unavailable",
+        "reasonCode": "status_stale",
+    }
+
+
+def public_status_message(status: str) -> str:
+    return {
+        "operational": "Работает",
+        "degraded": "Работает с ограничениями",
+        "partial_outage": "Частичная недоступность",
+        "major_outage": "Недоступно",
+        "unknown": "Ожидается проверка",
+    }.get(status, "Ожидается проверка")
+
+
+def combined_public_status(connectivity: str, services: list[str]) -> str:
+    statuses = [connectivity, *services]
+    if connectivity == "major_outage":
+        return "major_outage"
+    if any(status == "major_outage" for status in statuses):
+        return "partial_outage"
+    if any(status in {"degraded", "partial_outage"} for status in statuses):
+        return "degraded"
+    if all(status == "operational" for status in statuses):
+        return "operational"
+    return "unknown"
+
+
+def status_payload(*, public: bool) -> dict[str, Any]:
+    with connect() as db:
+        snapshot = read_status_setting(db, "status.current", {})
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        catalog = status_configuration_catalog(db)
+        catalog_by_key = {item["configurationKey"]: item for item in catalog}
+        selected_keys = normalize_status_configuration_keys(selected_status_configuration_keys(db), catalog)
+
+    stored_results = {
+        str(item.get("configurationKey") or ""): item
+        for item in snapshot.get("connections", [])
+        if isinstance(item, dict)
+    }
+    connection_results: list[dict[str, Any]] = []
+    for key in selected_keys:
+        target = catalog_by_key.get(key)
+        stored = stored_results.get(key)
+        if target is None:
+            result = {
+                "configurationKey": key,
+                "connectionId": "",
+                "label": str((stored or {}).get("label") or "Удалённая конфигурация"),
+                "status": "unknown",
+                "reasonCode": "configuration_missing",
+                "checkedAt": (stored or {}).get("checkedAt"),
+                "latencyMs": None,
+            }
+        elif stored is None:
+            result = {
+                "configurationKey": key,
+                "connectionId": target["connectionId"],
+                "label": target["label"],
+                "endpoint": target["endpoint"],
+                "transport": target["transport"],
+                "security": target["security"],
+                "status": "unknown",
+                "reasonCode": "not_checked",
+                "checkedAt": None,
+                "latencyMs": None,
+            }
+        else:
+            result = status_result_fresh({**stored, "label": target["label"]})
+        connection_results.append(result)
+
+    connectivity = aggregate_connection_status(connection_results)
+    new_connections = status_result_fresh(
+        snapshot.get("newConnections") if isinstance(snapshot.get("newConnections"), dict) else {}
+    )
+    subscriptions = status_result_fresh(
+        snapshot.get("subscriptions") if isinstance(snapshot.get("subscriptions"), dict) else {}
+    )
+    specific_details = [
+        {
+            "label": item.get("label"),
+            "status": item.get("status"),
+            "serviceStatus": item.get("serviceStatus", item.get("status")),
+            "checkStatus": item.get("checkStatus", "completed"),
+            "message": public_status_message(str(item.get("status") or "unknown")),
+            "checkedAt": item.get("checkedAt"),
+            **({} if public else {
+                "configurationKey": item.get("configurationKey"),
+                "connectionId": item.get("connectionId"),
+                "endpoint": item.get("endpoint"),
+                "transport": item.get("transport"),
+                "security": item.get("security"),
+                "latencyMs": item.get("latencyMs"),
+                "reasonCode": item.get("reasonCode"),
+            }),
+        }
+        for item in connection_results
+    ]
+    watcher_checked_at = utc_now()
+    components = [
+        {
+            "key": "connection",
+            "title": "Подключение к Loki",
+            "status": "operational",
+            "serviceStatus": "operational",
+            "checkStatus": "completed",
+            "message": public_status_message("operational"),
+            "checkedAt": watcher_checked_at,
+            **({} if public else {"latencyMs": 0, "reasonCode": "watcher_reachable"}),
+        },
+        {
+            "key": "specific_connections",
+            "title": "Работоспособность конкретных подключений",
+            "status": connectivity,
+            "serviceStatus": connectivity,
+            "checkStatus": "completed",
+            "message": public_status_message(connectivity),
+            "checkedAt": snapshot.get("checkedAt"),
+            "details": specific_details,
+        },
+        {
+            "key": "new_connections",
+            "title": "Создание новых подключений",
+            "status": new_connections.get("status", "unknown"),
+            "serviceStatus": new_connections.get("serviceStatus", new_connections.get("status", "unknown")),
+            "checkStatus": new_connections.get("checkStatus", "completed"),
+            "message": public_status_message(str(new_connections.get("status") or "unknown")),
+            "checkedAt": new_connections.get("checkedAt"),
+            **({} if public else {"latencyMs": new_connections.get("latencyMs"), "reasonCode": new_connections.get("reasonCode")}),
+        },
+        {
+            "key": "subscriptions",
+            "title": "Получение и обновление подписок",
+            "status": subscriptions.get("status", "unknown"),
+            "serviceStatus": subscriptions.get("serviceStatus", subscriptions.get("status", "unknown")),
+            "checkStatus": subscriptions.get("checkStatus", "completed"),
+            "message": public_status_message(str(subscriptions.get("status") or "unknown")),
+            "checkedAt": subscriptions.get("checkedAt"),
+            **({} if public else {"latencyMs": subscriptions.get("latencyMs"), "reasonCode": subscriptions.get("reasonCode")}),
+        },
+    ]
+    overall = combined_public_status(
+        "operational",
+        [
+            connectivity,
+            str(new_connections.get("status") or "unknown"),
+            str(subscriptions.get("status") or "unknown"),
+        ],
+    )
+    result = {
+        "schemaVersion": 1,
+        "overallStatus": overall,
+        "message": public_status_message(overall),
+        "checkedAt": snapshot.get("checkedAt"),
+        "components": components,
+    }
+    if not public:
+        result["selectedConfigurationKeys"] = selected_keys
+        result["availableConfigurations"] = [
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"configuration", "configurationAliases"}
+            }
+            for item in catalog
+        ]
+    return result
+
+
+def save_status_configuration_selection(keys: list[str]) -> dict[str, Any]:
+    if len(keys) > STATUS_MAX_MONITORED_CONFIGURATIONS:
+        raise ValueError("too_many_status_configurations")
+    with connect() as db:
+        catalog = status_configuration_catalog(db)
+        keys = normalize_status_configuration_keys(keys, catalog)
+        available = {item["configurationKey"] for item in catalog}
+        if any(key not in available for key in keys):
+            raise ValueError("status_configuration_not_found")
+        write_status_setting(db, "status.monitored_configurations", keys)
+    sync_external_status_targets()
+    return status_payload(public=False)
+
+
+def run_status_monitor(stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            run_status_checks()
+        except sqlite3.Error as exc:
+            print(f"status monitor database error: {exc}")
+        except Exception as exc:
+            print(f"status monitor unexpected error: {type(exc).__name__}")
+        stop_event.wait(STATUS_CHECK_INTERVAL_SECONDS)
 
 
 def validate_register_payload(body: dict[str, Any], *, existing_key: str | None = None) -> tuple[dict[str, str] | None, str | None]:
@@ -3069,6 +3779,10 @@ class WatcherHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, {"status": "ok"})
             return
 
+        if path == "/api/v1/public/status":
+            json_response(self, HTTPStatus.OK, status_payload(public=True))
+            return
+
         if path.startswith("/sub/"):
             self.handle_public_subscription(path)
             return
@@ -3122,6 +3836,10 @@ class WatcherHandler(BaseHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, dashboard_payload())
             except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
                 json_response(self, HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+            return
+
+        if path == "/api/v1/status":
+            self.handle_status()
             return
 
         if path.startswith("/api/v1/commands/"):
@@ -3231,6 +3949,10 @@ class WatcherHandler(BaseHTTPRequestHandler):
                 self.handle_change_password()
                 return
 
+            if path == "/api/v1/status/check":
+                self.handle_status_check()
+                return
+
             if path == "/api/v1/server-updates/jobs":
                 self.handle_start_server_update()
                 return
@@ -3270,6 +3992,10 @@ class WatcherHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/v1/settings/connections":
                 self.handle_update_connection_settings()
+                return
+
+            if path == "/api/v1/status/targets":
+                self.handle_status_targets()
                 return
             if path.startswith("/api/v1/connections/"):
                 self.handle_update_connection(path)
@@ -3792,6 +4518,70 @@ class WatcherHandler(BaseHTTPRequestHandler):
 
         json_response(self, HTTPStatus.OK, {"commands": commands})
 
+    def handle_status(self) -> None:
+        if not dashboard_authorized(self):
+            auth_required_response(self)
+            return
+        json_response(self, HTTPStatus.OK, status_payload(public=False))
+
+    def handle_status_check(self) -> None:
+        if not dashboard_authorized(self):
+            auth_required_response(self)
+            return
+        snapshot = run_status_checks()
+        if snapshot is None:
+            json_response(self, HTTPStatus.CONFLICT, {"error": "status_check_in_progress"})
+            return
+        with connect() as db:
+            write_audit(
+                db,
+                "success",
+                "status.check",
+                "watcher",
+                dashboard_actor(self),
+                "Status checks completed.",
+                {"monitoredConfigurations": len(snapshot.get("connections", []))},
+            )
+        json_response(self, HTTPStatus.OK, status_payload(public=False))
+
+    def handle_status_targets(self) -> None:
+        if not dashboard_authorized(self):
+            auth_required_response(self)
+            return
+        try:
+            body, _ = read_json(self)
+        except json.JSONDecodeError:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
+            return
+        raw_keys = body.get("configurationKeys")
+        if not isinstance(raw_keys, list):
+            json_response(self, HTTPStatus.BAD_REQUEST, {"error": "configuration_keys_must_be_a_list"})
+            return
+        keys: list[str] = []
+        for value in raw_keys:
+            key = str(value or "")
+            if not re.fullmatch(r"[0-9a-f]{64}", key):
+                json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid_status_configuration_key"})
+                return
+            if key not in keys:
+                keys.append(key)
+        try:
+            payload = save_status_configuration_selection(keys)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        with connect() as db:
+            write_audit(
+                db,
+                "success",
+                "status.targets.update",
+                "watcher",
+                dashboard_actor(self),
+                "Monitored VLESS configurations updated.",
+                {"monitoredConfigurations": len(keys)},
+            )
+        json_response(self, HTTPStatus.OK, payload)
+
     def handle_connections(self) -> None:
         if not dashboard_authorized(self):
             auth_required_response(self)
@@ -4245,14 +5035,76 @@ class WatcherHandler(BaseHTTPRequestHandler):
             auth_required_response(self)
             return
         connection_id = unquote(path.removeprefix("/api/v1/connections/")).strip()
-        with connect() as db:
-            db.execute("DELETE FROM connection_sources WHERE connection_id = ?", (connection_id,))
-            result = db.execute("DELETE FROM issued_connections WHERE id = ?", (connection_id,))
-            if result.rowcount == 0:
+        actor = dashboard_actor(self)
+        with _pasarguard_operation_lock:
+            with connect() as db:
+                connection = db.execute("SELECT id FROM issued_connections WHERE id = ?", (connection_id,)).fetchone()
+                source = db.execute(
+                    "SELECT external_user_id FROM connection_sources WHERE connection_id = ? AND provider = 'pasarguard'",
+                    (connection_id,),
+                ).fetchone()
+            if connection is None:
                 json_response(self, HTTPStatus.NOT_FOUND, {"error": "connection_not_found"})
                 return
-            write_audit(db, "success", "connection.delete", connection_id, dashboard_actor(self), "Issued connection deleted.")
-        json_response(self, HTTPStatus.OK, {"status": "deleted", "id": connection_id})
+
+            external_user_id = str(source["external_user_id"] or "") if source is not None else ""
+            pasarguard_deleted = False
+            if external_user_id:
+                try:
+                    pasarguard_deleted = delete_pasarguard_user(connection_id, external_user_id)
+                except PasarGuardError as exc:
+                    with connect() as db:
+                        write_audit(
+                            db,
+                            "error",
+                            "connection.pasarguard.delete",
+                            connection_id,
+                            actor,
+                            "PasarGuard user deletion failed; the Watcher connection was preserved for retry.",
+                            {"externalUserId": external_user_id},
+                            error={"type": "PasarGuardError", "code": exc.code, "message": exc.message},
+                        )
+                    json_response(self, exc.status, {"error": exc.code, "message": exc.message})
+                    return
+
+            with connect() as db:
+                db.execute("DELETE FROM connection_sources WHERE connection_id = ?", (connection_id,))
+                db.execute("DELETE FROM issued_connections WHERE id = ?", (connection_id,))
+                selected_keys = selected_status_configuration_keys(db)
+                catalog = status_configuration_catalog(db)
+                normalized_keys = normalize_status_configuration_keys(selected_keys, catalog)
+                available_keys = {item["configurationKey"] for item in catalog}
+                retained_keys = [key for key in normalized_keys if key in available_keys]
+                if retained_keys != selected_keys:
+                    write_status_setting(
+                        db,
+                        "status.monitored_configurations",
+                        retained_keys,
+                    )
+                write_audit(
+                    db,
+                    "success",
+                    "connection.delete",
+                    connection_id,
+                    actor,
+                    "Issued connection and its managed PasarGuard user were deleted."
+                    if external_user_id
+                    else "Issued connection deleted.",
+                    {
+                        "externalUserId": external_user_id or None,
+                        "pasarguardUserDeleted": pasarguard_deleted,
+                    },
+                )
+        sync_external_status_targets()
+        json_response(
+            self,
+            HTTPStatus.OK,
+            {
+                "status": "deleted",
+                "id": connection_id,
+                "pasarguardUserDeleted": pasarguard_deleted,
+            },
+        )
 
     def handle_register(self) -> None:
         if not dashboard_authorized(self):
@@ -5201,13 +6053,21 @@ def run_server(port: int = 8080) -> None:
         name="connection-subscription-scanner",
         daemon=True,
     )
+    status_monitor = threading.Thread(
+        target=run_status_monitor,
+        args=(scanner_stop,),
+        name="public-status-monitor",
+        daemon=True,
+    )
     scanner.start()
+    status_monitor.start()
     print(f"Loki watcher API listening on {port}")
     try:
         server.serve_forever()
     finally:
         scanner_stop.set()
         scanner.join(timeout=2)
+        status_monitor.join(timeout=2)
         server.server_close()
 
 
